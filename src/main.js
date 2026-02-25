@@ -239,20 +239,20 @@ function renderRegister(msg = "", isError = false) {
 
 // ── Data loaders ──────────────────────────────────────────
 async function loadProfileAndOrg(userId) {
-  // ✅ maybeSingle: no truena con 0 rows (regresa null)
-  const { data: profile, error: pErr } = await supabase
+  // ✅ maybeSingle evita el 406 cuando no hay filas
+  const { data: profile0, error: pErr0 } = await supabase
     .from("profiles")
     .select("*")
     .eq("id", userId)
     .maybeSingle();
 
-  // Si hay error real (no “0 rows”), lo reportamos
-  if (pErr) {
-    console.warn("[main] No se pudo leer profile:", pErr.message);
+  if (pErr0) {
+    console.warn("[main] No se pudo leer profile:", pErr0.message);
     return { profile: null, organization: null };
   }
 
-  // ✅ Si no existe, lo creamos (por si el trigger no corrió / usuarios viejos)
+  // ✅ Si el profile no existe (usuarios viejos / trigger no corrió), lo creamos
+  let profile = profile0;
   if (!profile) {
     const { error: iErr } = await supabase.from("profiles").insert({ id: userId });
     if (iErr) {
@@ -260,20 +260,17 @@ async function loadProfileAndOrg(userId) {
       return { profile: null, organization: null };
     }
 
-    // Releer ya creado
-    const { data: created, error: rErr } = await supabase
+    const { data: profile1, error: pErr1 } = await supabase
       .from("profiles")
       .select("*")
       .eq("id", userId)
       .maybeSingle();
 
-    if (rErr) {
-      console.warn("[main] No se pudo releer profile:", rErr.message);
+    if (pErr1) {
+      console.warn("[main] No se pudo releer profile:", pErr1.message);
       return { profile: null, organization: null };
     }
-
-    // seguimos con created
-    return await loadProfileAndOrg(userId);
+    profile = profile1;
   }
 
   let organization = null;
@@ -282,7 +279,7 @@ async function loadProfileAndOrg(userId) {
       .from("organizations")
       .select("*")
       .eq("id", profile.organization_id)
-      .maybeSingle();
+      .single();
     if (!oErr) organization = org;
   }
 
@@ -302,47 +299,75 @@ async function tryLoadActiveProject() {
 
 // ── Onboarding: crear org ─────────────────────────────────
 function renderNoOrgScreen() {
+  const app = document.getElementById("app");
+  if (!app) return;
+
   app.innerHTML = `
-    <div class="container" style="padding-top:40px;">
-      <div class="card" style="max-width:520px;margin:0 auto;">
-        <h2>Configura tu organización</h2>
+    <div class="container" style="max-width:520px;margin:60px auto;">
+      <div class="card">
+        
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;">
+          <div>
+            <h2 style="margin:0;">Configura tu organización</h2>
+            <div class="muted" style="font-size:12px;margin-top:6px;">
+              ${escapeHtml(window.appState?.user?.email || "")}
+            </div>
+          </div>
+          <button class="btn btn-ghost btn-xs" id="btnLogoutOnboard" type="button">
+            Salir
+          </button>
+        </div>
+
         <p class="muted">
           Tu cuenta está lista. Ahora necesitas crear o unirte a una organización (productora).
         </p>
-        <label style="margin-top:12px;margin-bottom:6px;font-size:12px;color:rgba(255,255,255,.65);">
-          Nombre de la organización
-        </label>
-        <input id="orgName" type="text" placeholder="Ej. Productora Sur S.A." />
-        <div style="display:flex;gap:10px;margin-top:14px;">
-          <button class="btn btn-primary" id="btnCreateOrg">Crear organización</button>
-          <button class="btn btn-ghost" id="btnReload">Reintentar</button>
-        </div>
-        <div id="orgMsg" style="margin-top:10px;"></div>
-      </div>
-    </div>`;
 
-  document.getElementById("btnReload")?.addEventListener("click", () => bootAuthed());
+        <div style="margin-top:20px;">
+          <label>Nombre de la organización</label>
+          <input 
+            id="orgNameInput" 
+            type="text" 
+            placeholder="Ej. Productora Sur S.A." 
+            class="input"
+          />
+        </div>
+
+        <div style="display:flex;gap:12px;margin-top:20px;">
+          <button class="btn btn-primary" id="btnCreateOrg">
+            Crear organización
+          </button>
+          <button class="btn btn-secondary" id="btnReload">
+            Reintentar
+          </button>
+        </div>
+
+      </div>
+    </div>
+  `;
+
+  // ✅ Logout también disponible en onboarding
+  document.getElementById("btnLogoutOnboard")?.addEventListener("click", async () => {
+    try {
+      window.appState.project = null;
+      localStorage.removeItem("ACTIVE_PROJECT_ID");
+      await supabase.auth.signOut();
+      renderLogin("Sesión cerrada.");
+    } catch (err) {
+      console.warn("Error al cerrar sesión:", err?.message);
+      renderLogin("Sesión cerrada.");
+    }
+  });
+
+  // Mantén tus listeners originales:
+  document.getElementById("btnReload")?.addEventListener("click", () => {
+    boot();
+  });
 
   document.getElementById("btnCreateOrg")?.addEventListener("click", async () => {
-    ensureSupabase();
-    const orgName = document.getElementById("orgName").value.trim();
-    if (!orgName) { alert("Escribe el nombre de la organización."); return; }
+    const name = document.getElementById("orgNameInput")?.value?.trim();
+    if (!name) return;
 
-    const btn = document.getElementById("btnCreateOrg");
-    setBtnLoading(btn, true, "Crear organización");
-    const msgEl = document.getElementById("orgMsg");
-
-    try {
-      const { error } = await supabase.rpc("create_org_and_assign", { org_name: orgName });
-      if (error) throw error;
-      msgEl.innerHTML = `<div class="ok">Organización creada. Cargando…</div>`;
-      await bootAuthed();
-      navigate("proyectos");
-    } catch (e) {
-      msgEl.innerHTML = `<div class="error">${escapeHtml(e?.message || String(e))}</div>`;
-    } finally {
-      setBtnLoading(btn, false, "Crear organización");
-    }
+    await createOrganizationFlow(name);
   });
 }
 

@@ -5,16 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Cine Sistema</title>
 
-  <!-- CSS principal (ajusta si tu ruta es distinta) -->
+  <!-- ✅ Favicon (evita 404 en consola)
+       Si NO tienes este archivo, crea: /assets/favicon.ico
+       o cambia la ruta a donde esté tu icono -->
+  <link rel="icon" href="./assets/favicon.ico" />
+
+  <!-- CSS principal -->
   <link rel="stylesheet" href="./assets/styles/main.css" />
 
   <!-- ✅ Supabase config (SOLO UNA VEZ, ANTES de cargar main.js) -->
- <script>
-  window.__SUPABASE_CONFIG__ = {
-    url: "https://fiurztzszhtpvhwdpggk.supabase.co",
-    anonKey: "sb_publishable_bjUYAYhBy9DY4wjmLmSokQ_12cqoFz6"
-  };
-</script>
+  <script>
+    window.__SUPABASE_CONFIG__ = {
+      url: "https://fiurztzszhtpvhwdpggk.supabase.co",
+      anonKey: "sb_publishable_bjUYAYhBy9DY4wjmLmSokQ_12cqoFz6"
+    };
+  </script>
 </head>
 
 <body>
