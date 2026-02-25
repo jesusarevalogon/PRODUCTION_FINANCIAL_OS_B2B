@@ -239,15 +239,41 @@ function renderRegister(msg = "", isError = false) {
 
 // ── Data loaders ──────────────────────────────────────────
 async function loadProfileAndOrg(userId) {
+  // ✅ maybeSingle: no truena con 0 rows (regresa null)
   const { data: profile, error: pErr } = await supabase
     .from("profiles")
     .select("*")
     .eq("id", userId)
-    .single();
+    .maybeSingle();
 
+  // Si hay error real (no “0 rows”), lo reportamos
   if (pErr) {
     console.warn("[main] No se pudo leer profile:", pErr.message);
     return { profile: null, organization: null };
+  }
+
+  // ✅ Si no existe, lo creamos (por si el trigger no corrió / usuarios viejos)
+  if (!profile) {
+    const { error: iErr } = await supabase.from("profiles").insert({ id: userId });
+    if (iErr) {
+      console.warn("[main] No se pudo crear profile:", iErr.message);
+      return { profile: null, organization: null };
+    }
+
+    // Releer ya creado
+    const { data: created, error: rErr } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (rErr) {
+      console.warn("[main] No se pudo releer profile:", rErr.message);
+      return { profile: null, organization: null };
+    }
+
+    // seguimos con created
+    return await loadProfileAndOrg(userId);
   }
 
   let organization = null;
@@ -256,7 +282,7 @@ async function loadProfileAndOrg(userId) {
       .from("organizations")
       .select("*")
       .eq("id", profile.organization_id)
-      .single();
+      .maybeSingle();
     if (!oErr) organization = org;
   }
 
