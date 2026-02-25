@@ -20,6 +20,8 @@ window.navigateTo = (route) => navigate(route);
 let _authUnsubscribe = null;
 // ── Mutex: evita boots concurrentes ──────────────────────
 let _bootInFlight = false;
+// ✅ NUEVO: si entra otra llamada mientras boot está en vuelo, la encolamos
+let _bootQueued = false;
 
 // ── Helpers UI ───────────────────────────────────────────
 function escapeHtml(str) {
@@ -536,9 +538,10 @@ function startRouterOnce() {
 
 // ── Boot ──────────────────────────────────────────────────
 async function bootAuthed() {
-  // ✅ Mutex: si ya hay un boot en curso, ignorar para evitar condiciones de carrera
+  // ✅ Mutex: si ya hay un boot en curso, ENCOLAR una ejecución extra
   if (_bootInFlight) {
-    console.log("[boot] ya en vuelo, ignorando llamada concurrente");
+    _bootQueued = true;
+    console.log("[boot] ya en vuelo, encolando llamada");
     return;
   }
   _bootInFlight = true;
@@ -591,6 +594,13 @@ async function bootAuthed() {
 
   } finally {
     _bootInFlight = false;
+
+    // ✅ Si hubo una llamada concurrente mientras corría, ejecuta 1 vez más
+    if (_bootQueued) {
+      _bootQueued = false;
+      // no awaits para evitar cadena larga dentro del finally; lo re-disparamos microtask
+      Promise.resolve().then(() => bootAuthed());
+    }
   }
 }
 
