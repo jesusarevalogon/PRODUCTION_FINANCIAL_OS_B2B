@@ -2,7 +2,7 @@
 import { initRouter, navigate } from "./router.js";
 import { supabase } from "./services/supabase.js";
 import { getProjectById } from "./services/proyectosService.js";
-import { getActiveProjectId, setActiveProject } from "./modules/proyectos.js";
+import { getActiveProjectId } from "./modules/proyectos.js";
 
 const app = document.getElementById("app");
 
@@ -18,15 +18,19 @@ window.navigateTo = (route) => navigate(route);
 
 // ── Auth listener (una sola suscripción) ─────────────────
 let _authUnsubscribe = null;
+
 // ── Mutex: evita boots concurrentes ──────────────────────
 let _bootInFlight = false;
-// ✅ NUEVO: si entra un boot mientras hay otro en vuelo, lo encolamos
 let _bootQueued = false;
 
 // ── Helpers UI ───────────────────────────────────────────
 function escapeHtml(str) {
   return String(str ?? "").replace(/[&<>"']/g, (m) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;",
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;",
   }[m]));
 }
 
@@ -58,31 +62,36 @@ function ensureSupabase() {
 
 // ── Topbar ───────────────────────────────────────────────
 function renderTopBar(activeRoute = "") {
-  const orgName  = window.appState.organization?.name || "(sin org)";
+  const orgName = window.appState.organization?.name || "(sin org)";
   const projName = window.appState.project?.name;
-  const email    = window.appState.user?.email || "";
+  const email = window.appState.user?.email || "";
 
   const navLinks = [
-    { route: "",          label: "Home" },
+    { route: "", label: "Home" },
     { route: "proyectos", label: "Proyectos" },
     { route: "presupuesto", label: "Presupuesto" },
-    { route: "gastos",    label: "Gastos" },
+    { route: "gastos", label: "Gastos" },
     { route: "ejecucion", label: "Ejecución" },
   ];
 
-  const navHtml = navLinks.map(n => `
+  const navHtml = navLinks
+    .map(
+      (n) => `
     <button class="nav-link ${activeRoute === n.route ? "nav-link-active" : ""}"
             data-nav="${n.route}">${n.label}</button>
-  `).join("");
+  `
+    )
+    .join("");
 
   return `
     <div class="topbar-main">
       <div class="topbar-inner">
         <div class="topbar-brand">
           <span class="topbar-org">${escapeHtml(orgName)}</span>
-          ${projName
-            ? `<span class="topbar-sep">›</span><span class="topbar-proj">${escapeHtml(projName)}</span>`
-            : `<span class="topbar-sep">›</span><span class="topbar-no-proj" title="Selecciona un proyecto">Sin proyecto</span>`
+          ${
+            projName
+              ? `<span class="topbar-sep">›</span><span class="topbar-proj">${escapeHtml(projName)}</span>`
+              : `<span class="topbar-sep">›</span><span class="topbar-no-proj" title="Selecciona un proyecto">Sin proyecto</span>`
           }
         </div>
 
@@ -98,33 +107,38 @@ function renderTopBar(activeRoute = "") {
 }
 
 function bindTopBarEvents(activeRoute = "") {
-  // Navegación
-  document.querySelectorAll("[data-nav]").forEach(btn => {
+  document.querySelectorAll("[data-nav]").forEach((btn) => {
     btn.addEventListener("click", () => navigate(btn.dataset.nav));
   });
 
-  // Logout
   const btnLogout = document.getElementById("btnLogout");
   if (btnLogout) {
     btnLogout.addEventListener("click", async () => {
       ensureSupabase();
       window.appState.project = null;
       localStorage.removeItem("ACTIVE_PROJECT_ID");
-      try { await supabase.auth.signOut(); } catch {
-        try { await supabase.auth.signOut({ scope: "local" }); } catch {}
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        try {
+          await supabase.auth.signOut({ scope: "local" });
+        } catch {}
         renderLogin("Sesión cerrada.");
       }
     });
   }
 
-  // Escuchar cambio de proyecto para actualizar topbar
-  window.addEventListener("project-changed", () => {
-    const topbarEl = document.querySelector(".topbar-main");
-    if (topbarEl) {
-      topbarEl.outerHTML = renderTopBar(activeRoute);
-      bindTopBarEvents(activeRoute);
-    }
-  }, { once: true });
+  window.addEventListener(
+    "project-changed",
+    () => {
+      const topbarEl = document.querySelector(".topbar-main");
+      if (topbarEl) {
+        topbarEl.outerHTML = renderTopBar(activeRoute);
+        bindTopBarEvents(activeRoute);
+      }
+    },
+    { once: true }
+  );
 }
 
 // ── Auth UI ───────────────────────────────────────────────
@@ -146,34 +160,43 @@ function renderLogin(msg = "", isError = false) {
           </div>
         </form>
 
-        ${msg ? `<div class="${isError ? "error" : "ok"}" style="margin-top:10px;">${escapeHtml(msg)}</div>` : ""}
+        ${
+          msg
+            ? `<div class="${isError ? "error" : "ok"}" style="margin-top:10px;">${escapeHtml(msg)}</div>`
+            : ""
+        }
       </div>
     </div>`;
 
   document.getElementById("btnGoRegister")?.addEventListener("click", () => renderRegister());
 
-  const form    = document.getElementById("loginForm");
+  const form = document.getElementById("loginForm");
   const btnLogin = document.getElementById("btnLogin");
 
   form?.addEventListener("submit", async (e) => {
     e.preventDefault();
     ensureSupabase();
-    const email    = document.getElementById("email").value.trim();
+    const email = document.getElementById("email").value.trim();
     const password = document.getElementById("password").value;
-    if (!email)    return renderLogin("Escribe tu email.", true);
+    if (!email) return renderLogin("Escribe tu email.", true);
     if (!password) return renderLogin("Escribe tu contraseña.", true);
 
     setBtnLoading(btnLogin, true, "Entrar");
     try {
-      // ✅ Sin pre-signOut: evita SIGNED_OUT en medio del login
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
         console.warn("[login error]", error.message);
         renderLogin(error.message, true);
         return;
       }
+
       console.log("[login ok]", data.user?.email);
+
+      // ✅ FIX CRÍTICO: el login ya está OK, pero la UI puede quedarse "colgada"
+      // si el onAuthStateChange llega tarde o choca con el mutex.
+      // Disparamos bootAuthed aquí para forzar el render correcto sin refrescar.
       renderLogin("Entrando…");
+      await bootAuthed();
     } catch (err) {
       console.error("[login exception]", err);
       renderLogin("Error inesperado al iniciar sesión.", true);
@@ -203,20 +226,24 @@ function renderRegister(msg = "", isError = false) {
           </div>
         </form>
 
-        ${msg ? `<div class="${isError ? "error" : "ok"}" style="margin-top:10px;">${escapeHtml(msg)}</div>` : ""}
+        ${
+          msg
+            ? `<div class="${isError ? "error" : "ok"}" style="margin-top:10px;">${escapeHtml(msg)}</div>`
+            : ""
+        }
       </div>
     </div>`;
 
   document.getElementById("btnBack")?.addEventListener("click", () => renderLogin());
 
-  const form     = document.getElementById("regForm");
+  const form = document.getElementById("regForm");
   const btnCreate = document.getElementById("btnCreate");
 
   form?.addEventListener("submit", async (e) => {
     e.preventDefault();
     ensureSupabase();
-    const email     = document.getElementById("email").value.trim();
-    const password  = document.getElementById("password").value;
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
     const password2 = document.getElementById("password2").value;
     if (!email) return renderRegister("Escribe un email.", true);
     if (password.length < 6) return renderRegister("Contraseña mínimo 6 caracteres.", true);
@@ -224,11 +251,16 @@ function renderRegister(msg = "", isError = false) {
 
     setBtnLoading(btnCreate, true, "Crear cuenta");
     try {
-      const { data, error } = await supabase.auth.signUp({ email, password });
-      if (error) { renderRegister(error.message, true); return; }
-      try { await supabase.auth.signOut({ scope: "local" }); } catch {}
+      const { error } = await supabase.auth.signUp({ email, password });
+      if (error) {
+        renderRegister(error.message, true);
+        return;
+      }
+      try {
+        await supabase.auth.signOut({ scope: "local" });
+      } catch {}
       renderLogin("✅ Cuenta creada. Ahora inicia sesión.");
-    } catch (err) {
+    } catch {
       renderRegister("Error inesperado al crear la cuenta.", true);
     } finally {
       setBtnLoading(btnCreate, false, "Crear cuenta");
@@ -238,7 +270,6 @@ function renderRegister(msg = "", isError = false) {
 
 // ── Data loaders ──────────────────────────────────────────
 async function loadProfileAndOrg(userId) {
-  // ✅ maybeSingle evita 406 si no existe fila
   const { data: profile0, error: pErr0 } = await supabase
     .from("profiles")
     .select("*")
@@ -250,7 +281,6 @@ async function loadProfileAndOrg(userId) {
     return { profile: null, organization: null };
   }
 
-  // ✅ Si no existe, lo creamos (usuarios viejos / trigger no corrió)
   let profile = profile0;
   if (!profile) {
     const { error: iErr } = await supabase.from("profiles").insert({ id: userId });
@@ -346,7 +376,10 @@ function renderNoOrgScreen() {
   document.getElementById("btnCreateOrg")?.addEventListener("click", async () => {
     ensureSupabase();
     const orgName = document.getElementById("orgName").value.trim();
-    if (!orgName) { alert("Escribe el nombre de la organización."); return; }
+    if (!orgName) {
+      alert("Escribe el nombre de la organización.");
+      return;
+    }
 
     const btn = document.getElementById("btnCreateOrg");
     setBtnLoading(btn, true, "Crear organización");
@@ -370,7 +403,6 @@ function renderNoOrgScreen() {
 async function renderDashboard(route) {
   const currentRoute = (route || "").replace(/^#/, "");
 
-  // Sin org → onboarding
   if (!window.appState.profile?.organization_id) {
     renderNoOrgScreen();
     return;
@@ -378,7 +410,6 @@ async function renderDashboard(route) {
 
   const topbarHtml = renderTopBar(currentRoute);
 
-  // ─ Home ─
   if (!currentRoute) {
     const proj = window.appState.project;
     app.innerHTML = `
@@ -387,10 +418,11 @@ async function renderDashboard(route) {
         <div class="card" style="margin-bottom:18px;">
           <h2>Bienvenido</h2>
           <p><b>Organización:</b> ${escapeHtml(window.appState.organization?.name || "")}</p>
-          ${proj
-            ? `<p><b>Proyecto activo:</b> ${escapeHtml(proj.name)}</p>
-               <p class="muted">Accede a <b>Presupuesto</b>, <b>Gastos</b> o <b>Ejecución</b> desde el menú de arriba.</p>`
-            : `<p class="muted">No tienes proyecto activo. Ve a <b>Proyectos</b> para crear o seleccionar uno.</p>`
+          ${
+            proj
+              ? `<p><b>Proyecto activo:</b> ${escapeHtml(proj.name)}</p>
+                 <p class="muted">Accede a <b>Presupuesto</b>, <b>Gastos</b> o <b>Ejecución</b> desde el menú de arriba.</p>`
+              : `<p class="muted">No tienes proyecto activo. Ve a <b>Proyectos</b> para crear o seleccionar uno.</p>`
           }
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;">
@@ -417,16 +449,17 @@ async function renderDashboard(route) {
         </div>
       </div>`;
     bindTopBarEvents("");
-    document.querySelectorAll("[data-nav]").forEach(btn => {
+    document.querySelectorAll("[data-nav]").forEach((btn) => {
       btn.addEventListener("click", () => navigate(btn.dataset.nav));
     });
     return;
   }
 
-  // ─ Presupuesto ─
   if (currentRoute === "presupuesto") {
     let mod;
-    try { mod = await import("./modules/presupuesto.js"); } catch (e) {
+    try {
+      mod = await import("./modules/presupuesto.js");
+    } catch (e) {
       _renderModuleError(topbarHtml, "presupuesto.js", e);
       return;
     }
@@ -442,62 +475,74 @@ async function renderDashboard(route) {
     const content = mod.renderPresupuestoView();
     app.innerHTML = `${topbarHtml}<div class="container" style="padding-top:18px;"></div>${content}`;
     bindTopBarEvents("presupuesto");
-    try { await mod.bindPresupuestoEvents(); } catch (e) {
+    try {
+      await mod.bindPresupuestoEvents();
+    } catch (e) {
       console.error("[presupuesto bind]", e);
-      app.innerHTML += `<div class="container"><div class="error" style="margin-top:10px;">${escapeHtml(e?.message || String(e))}</div></div>`;
+      app.innerHTML += `<div class="container"><div class="error" style="margin-top:10px;">${escapeHtml(
+        e?.message || String(e)
+      )}</div></div>`;
     }
     return;
   }
 
-  // ─ Proyectos ─
   if (currentRoute === "proyectos") {
     let mod;
-    try { mod = await import("./modules/proyectos.js"); } catch (e) {
+    try {
+      mod = await import("./modules/proyectos.js");
+    } catch (e) {
       _renderModuleError(topbarHtml, "proyectos.js", e);
       return;
     }
     const content = mod.renderProyectosView();
     app.innerHTML = `${topbarHtml}${content}`;
     bindTopBarEvents("proyectos");
-    try { await mod.bindProyectosEvents(); } catch (e) {
+    try {
+      await mod.bindProyectosEvents();
+    } catch (e) {
       console.error("[proyectos bind]", e);
     }
     return;
   }
 
-  // ─ Gastos ─
   if (currentRoute === "gastos") {
     let mod;
-    try { mod = await import("./modules/gastos.js"); } catch (e) {
+    try {
+      mod = await import("./modules/gastos.js");
+    } catch (e) {
       _renderModuleError(topbarHtml, "gastos.js", e);
       return;
     }
     const content = mod.renderGastosView();
     app.innerHTML = `${topbarHtml}${content}`;
     bindTopBarEvents("gastos");
-    try { await mod.bindGastosEvents(); } catch (e) {
+    try {
+      await mod.bindGastosEvents();
+    } catch (e) {
       console.error("[gastos bind]", e);
     }
     return;
   }
 
-  // ─ Ejecución ─
   if (currentRoute === "ejecucion") {
     let mod;
-    try { mod = await import("./modules/ejecucion.js"); } catch (e) {
+    try {
+      mod = await import("./modules/ejecucion.js");
+    } catch (e) {
       _renderModuleError(topbarHtml, "ejecucion.js", e);
       return;
     }
     const content = mod.renderEjecucionView();
     app.innerHTML = `${topbarHtml}${content}`;
     bindTopBarEvents("ejecucion");
-    try { await mod.bindEjecucionEvents(); } catch (e) {
+    try {
+      await mod.bindEjecucionEvents();
+    } catch (e) {
       console.error("[ejecucion bind]", e);
     }
     return;
   }
 
-  // ─ Ruta no válida ─
   app.innerHTML = `
     ${topbarHtml}
     <div class="container" style="padding-top:24px;">
@@ -531,7 +576,6 @@ function startRouterOnce() {
 
 // ── Boot ──────────────────────────────────────────────────
 async function bootAuthed() {
-  // ✅ FIX CRÍTICO: si ya hay un boot en vuelo, ENCOLAR (no ignorar)
   if (_bootInFlight) {
     _bootQueued = true;
     console.log("[boot] ya en vuelo, encolando llamada");
@@ -544,10 +588,10 @@ async function bootAuthed() {
 
     const { data: sessionData } = await supabase.auth.getSession();
     const session = sessionData?.session || null;
-    const user    = session?.user || null;
+    const user = session?.user || null;
 
-    window.appState.user         = user;
-    window.appState.profile      = null;
+    window.appState.user = user;
+    window.appState.profile = null;
     window.appState.organization = null;
 
     if (!user) {
@@ -556,7 +600,7 @@ async function bootAuthed() {
     }
 
     const { profile, organization } = await loadProfileAndOrg(user.id);
-    window.appState.profile      = profile;
+    window.appState.profile = profile;
     window.appState.organization = organization;
 
     if (!profile) {
@@ -570,13 +614,14 @@ async function bootAuthed() {
           </div>
         </div>`;
       document.getElementById("btnLogout2")?.addEventListener("click", async () => {
-        try { await supabase.auth.signOut(); } catch {}
+        try {
+          await supabase.auth.signOut();
+        } catch {}
         renderLogin("Sesión cerrada.");
       });
       return;
     }
 
-    // Cargar proyecto activo desde localStorage
     if (!window.appState.project) {
       const proj = await tryLoadActiveProject();
       window.appState.project = proj;
@@ -584,11 +629,9 @@ async function bootAuthed() {
 
     startRouterOnce();
     if (!window.location.hash) navigate("");
-
   } finally {
     _bootInFlight = false;
 
-    // ✅ Si hubo llamada concurrente, ejecutar una vez más
     if (_bootQueued) {
       _bootQueued = false;
       Promise.resolve().then(() => bootAuthed());
@@ -599,12 +642,12 @@ async function bootAuthed() {
 async function boot() {
   ensureSupabase();
 
-  // ✅ Boot inicial (sin esperar al listener de auth)
   await bootAuthed();
 
-  // ✅ Suscripción única — manejamos cada evento por separado
   if (_authUnsubscribe) {
-    try { _authUnsubscribe(); } catch {}
+    try {
+      _authUnsubscribe();
+    } catch {}
     _authUnsubscribe = null;
   }
 
@@ -613,15 +656,13 @@ async function boot() {
 
     if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
       await bootAuthed();
-
     } else if (event === "SIGNED_OUT") {
-      window.appState.user         = null;
-      window.appState.profile      = null;
+      window.appState.user = null;
+      window.appState.profile = null;
       window.appState.organization = null;
-      window.appState.project      = null;
+      window.appState.project = null;
       localStorage.removeItem("ACTIVE_PROJECT_ID");
       renderLogin("Sesión cerrada.");
-
     } else if (event === "INITIAL_SESSION") {
       if (session && !window.appState.user) {
         await bootAuthed();
@@ -630,7 +671,9 @@ async function boot() {
   });
 
   _authUnsubscribe = () => {
-    try { sub.subscription.unsubscribe(); } catch {}
+    try {
+      sub.subscription.unsubscribe();
+    } catch {}
   };
 }
 
