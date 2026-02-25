@@ -20,7 +20,7 @@ window.navigateTo = (route) => navigate(route);
 let _authUnsubscribe = null;
 // ── Mutex: evita boots concurrentes ──────────────────────
 let _bootInFlight = false;
-// ✅ Si entra otra llamada mientras el boot está en vuelo, la encolamos
+// ✅ NUEVO: si entra un boot mientras hay otro en vuelo, lo encolamos
 let _bootQueued = false;
 
 // ── Helpers UI ───────────────────────────────────────────
@@ -110,9 +110,7 @@ function bindTopBarEvents(activeRoute = "") {
       ensureSupabase();
       window.appState.project = null;
       localStorage.removeItem("ACTIVE_PROJECT_ID");
-      // signOut dispara SIGNED_OUT → onAuthStateChange → renderLogin()
       try { await supabase.auth.signOut(); } catch {
-        // Si falla la red, al menos limpiamos local
         try { await supabase.auth.signOut({ scope: "local" }); } catch {}
         renderLogin("Sesión cerrada.");
       }
@@ -167,6 +165,7 @@ function renderLogin(msg = "", isError = false) {
 
     setBtnLoading(btnLogin, true, "Entrar");
     try {
+      // ✅ Sin pre-signOut: evita SIGNED_OUT en medio del login
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
         console.warn("[login error]", error.message);
@@ -239,7 +238,7 @@ function renderRegister(msg = "", isError = false) {
 
 // ── Data loaders ──────────────────────────────────────────
 async function loadProfileAndOrg(userId) {
-  // ✅ maybeSingle evita el 406 cuando no hay filas
+  // ✅ maybeSingle evita 406 si no existe fila
   const { data: profile0, error: pErr0 } = await supabase
     .from("profiles")
     .select("*")
@@ -251,7 +250,7 @@ async function loadProfileAndOrg(userId) {
     return { profile: null, organization: null };
   }
 
-  // ✅ Si el profile no existe (usuarios viejos / trigger no corrió), lo creamos
+  // ✅ Si no existe, lo creamos (usuarios viejos / trigger no corrió)
   let profile = profile0;
   if (!profile) {
     const { error: iErr } = await supabase.from("profiles").insert({ id: userId });
@@ -299,51 +298,37 @@ async function tryLoadActiveProject() {
 
 // ── Onboarding: crear org ─────────────────────────────────
 function renderNoOrgScreen() {
-  const app = document.getElementById("app");
-  if (!app) return;
-
   app.innerHTML = `
-    <div class="container" style="max-width:520px;margin:60px auto;">
-      <div class="card">
-        
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;">
+    <div class="container" style="padding-top:40px;">
+      <div class="card" style="max-width:520px;margin:0 auto;">
+
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
           <div>
             <h2 style="margin:0;">Configura tu organización</h2>
             <div class="muted" style="font-size:12px;margin-top:6px;">
               ${escapeHtml(window.appState?.user?.email || "")}
             </div>
           </div>
-          <button class="btn btn-ghost btn-xs" id="btnLogoutOnboard" type="button">
-            Salir
-          </button>
+          <button class="btn btn-ghost btn-xs" id="btnLogoutOnboard" type="button">Salir</button>
         </div>
 
-        <p class="muted">
+        <p class="muted" style="margin-top:14px;">
           Tu cuenta está lista. Ahora necesitas crear o unirte a una organización (productora).
         </p>
 
-        <div style="margin-top:20px;">
-          <label>Nombre de la organización</label>
-          <input 
-            id="orgNameInput" 
-            type="text" 
-            placeholder="Ej. Productora Sur S.A." 
-            class="input"
-          />
+        <label style="margin-top:12px;margin-bottom:6px;font-size:12px;color:rgba(255,255,255,.65);">
+          Nombre de la organización
+        </label>
+        <input id="orgName" type="text" placeholder="Ej. Productora Sur S.A." />
+
+        <div style="display:flex;gap:10px;margin-top:14px;">
+          <button class="btn btn-primary" id="btnCreateOrg">Crear organización</button>
+          <button class="btn btn-ghost" id="btnReload">Reintentar</button>
         </div>
 
-        <div style="display:flex;gap:12px;margin-top:20px;">
-          <button class="btn btn-primary" id="btnCreateOrg">
-            Crear organización
-          </button>
-          <button class="btn btn-secondary" id="btnReload">
-            Reintentar
-          </button>
-        </div>
-
+        <div id="orgMsg" style="margin-top:10px;"></div>
       </div>
-    </div>
-  `;
+    </div>`;
 
   document.getElementById("btnLogoutOnboard")?.addEventListener("click", async () => {
     try {
@@ -351,21 +336,33 @@ function renderNoOrgScreen() {
       localStorage.removeItem("ACTIVE_PROJECT_ID");
       await supabase.auth.signOut();
       renderLogin("Sesión cerrada.");
-    } catch (err) {
-      console.warn("Error al cerrar sesión:", err?.message);
+    } catch {
       renderLogin("Sesión cerrada.");
     }
   });
 
-  document.getElementById("btnReload")?.addEventListener("click", () => {
-    boot();
-  });
+  document.getElementById("btnReload")?.addEventListener("click", () => bootAuthed());
 
   document.getElementById("btnCreateOrg")?.addEventListener("click", async () => {
-    const name = document.getElementById("orgNameInput")?.value?.trim();
-    if (!name) return;
+    ensureSupabase();
+    const orgName = document.getElementById("orgName").value.trim();
+    if (!orgName) { alert("Escribe el nombre de la organización."); return; }
 
-    await createOrganizationFlow(name);
+    const btn = document.getElementById("btnCreateOrg");
+    setBtnLoading(btn, true, "Crear organización");
+    const msgEl = document.getElementById("orgMsg");
+
+    try {
+      const { error } = await supabase.rpc("create_org_and_assign", { org_name: orgName });
+      if (error) throw error;
+      msgEl.innerHTML = `<div class="ok">Organización creada. Cargando…</div>`;
+      await bootAuthed();
+      navigate("proyectos");
+    } catch (e) {
+      msgEl.innerHTML = `<div class="error">${escapeHtml(e?.message || String(e))}</div>`;
+    } finally {
+      setBtnLoading(btn, false, "Crear organización");
+    }
   });
 }
 
@@ -426,8 +423,91 @@ async function renderDashboard(route) {
     return;
   }
 
-  // (resto de rutas igual que tu archivo original)
-  // ...
+  // ─ Presupuesto ─
+  if (currentRoute === "presupuesto") {
+    let mod;
+    try { mod = await import("./modules/presupuesto.js"); } catch (e) {
+      _renderModuleError(topbarHtml, "presupuesto.js", e);
+      return;
+    }
+    if (!window.appState.project?.id) {
+      app.innerHTML = `${topbarHtml}<div class="container" style="padding-top:24px;"><div class="card">
+        <h2>Sin proyecto activo</h2>
+        <p class="muted">Selecciona un proyecto primero.</p>
+        <button class="btn btn-primary" onclick="window.navigateTo('proyectos')">Ir a Proyectos</button>
+      </div></div>`;
+      bindTopBarEvents("presupuesto");
+      return;
+    }
+    const content = mod.renderPresupuestoView();
+    app.innerHTML = `${topbarHtml}<div class="container" style="padding-top:18px;"></div>${content}`;
+    bindTopBarEvents("presupuesto");
+    try { await mod.bindPresupuestoEvents(); } catch (e) {
+      console.error("[presupuesto bind]", e);
+      app.innerHTML += `<div class="container"><div class="error" style="margin-top:10px;">${escapeHtml(e?.message || String(e))}</div></div>`;
+    }
+    return;
+  }
+
+  // ─ Proyectos ─
+  if (currentRoute === "proyectos") {
+    let mod;
+    try { mod = await import("./modules/proyectos.js"); } catch (e) {
+      _renderModuleError(topbarHtml, "proyectos.js", e);
+      return;
+    }
+    const content = mod.renderProyectosView();
+    app.innerHTML = `${topbarHtml}${content}`;
+    bindTopBarEvents("proyectos");
+    try { await mod.bindProyectosEvents(); } catch (e) {
+      console.error("[proyectos bind]", e);
+    }
+    return;
+  }
+
+  // ─ Gastos ─
+  if (currentRoute === "gastos") {
+    let mod;
+    try { mod = await import("./modules/gastos.js"); } catch (e) {
+      _renderModuleError(topbarHtml, "gastos.js", e);
+      return;
+    }
+    const content = mod.renderGastosView();
+    app.innerHTML = `${topbarHtml}${content}`;
+    bindTopBarEvents("gastos");
+    try { await mod.bindGastosEvents(); } catch (e) {
+      console.error("[gastos bind]", e);
+    }
+    return;
+  }
+
+  // ─ Ejecución ─
+  if (currentRoute === "ejecucion") {
+    let mod;
+    try { mod = await import("./modules/ejecucion.js"); } catch (e) {
+      _renderModuleError(topbarHtml, "ejecucion.js", e);
+      return;
+    }
+    const content = mod.renderEjecucionView();
+    app.innerHTML = `${topbarHtml}${content}`;
+    bindTopBarEvents("ejecucion");
+    try { await mod.bindEjecucionEvents(); } catch (e) {
+      console.error("[ejecucion bind]", e);
+    }
+    return;
+  }
+
+  // ─ Ruta no válida ─
+  app.innerHTML = `
+    ${topbarHtml}
+    <div class="container" style="padding-top:24px;">
+      <div class="card">
+        <h2>Ruta no encontrada</h2>
+        <p class="muted">La sección <b>${escapeHtml(currentRoute)}</b> no existe.</p>
+        <button class="btn btn-primary" onclick="window.navigateTo('')">Volver al inicio</button>
+      </div>
+    </div>`;
+  bindTopBarEvents(currentRoute);
 }
 
 function _renderModuleError(topbarHtml, name, e) {
@@ -451,7 +531,7 @@ function startRouterOnce() {
 
 // ── Boot ──────────────────────────────────────────────────
 async function bootAuthed() {
-  // ✅ Mutex PRO: si ya hay un boot en curso, ENCOLAR (no ignorar)
+  // ✅ FIX CRÍTICO: si ya hay un boot en vuelo, ENCOLAR (no ignorar)
   if (_bootInFlight) {
     _bootQueued = true;
     console.log("[boot] ya en vuelo, encolando llamada");
@@ -508,7 +588,7 @@ async function bootAuthed() {
   } finally {
     _bootInFlight = false;
 
-    // ✅ Si hubo una llamada concurrente mientras corría, ejecuta 1 vez más
+    // ✅ Si hubo llamada concurrente, ejecutar una vez más
     if (_bootQueued) {
       _bootQueued = false;
       Promise.resolve().then(() => bootAuthed());
