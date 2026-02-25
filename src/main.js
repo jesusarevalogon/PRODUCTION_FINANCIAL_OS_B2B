@@ -60,6 +60,10 @@ function ensureSupabase() {
   }
 }
 
+function isLoginScreenVisible() {
+  return !!document.getElementById("loginForm");
+}
+
 // ── Topbar ───────────────────────────────────────────────
 function renderTopBar(activeRoute = "") {
   const orgName = window.appState.organization?.name || "(sin org)";
@@ -107,10 +111,12 @@ function renderTopBar(activeRoute = "") {
 }
 
 function bindTopBarEvents(activeRoute = "") {
+  // Navegación
   document.querySelectorAll("[data-nav]").forEach((btn) => {
     btn.addEventListener("click", () => navigate(btn.dataset.nav));
   });
 
+  // Logout
   const btnLogout = document.getElementById("btnLogout");
   if (btnLogout) {
     btnLogout.addEventListener("click", async () => {
@@ -128,6 +134,7 @@ function bindTopBarEvents(activeRoute = "") {
     });
   }
 
+  // Escuchar cambio de proyecto para actualizar topbar
   window.addEventListener(
     "project-changed",
     () => {
@@ -192,11 +199,25 @@ function renderLogin(msg = "", isError = false) {
 
       console.log("[login ok]", data.user?.email);
 
-      // ✅ FIX CRÍTICO: el login ya está OK, pero la UI puede quedarse "colgada"
-      // si el onAuthStateChange llega tarde o choca con el mutex.
-      // Disparamos bootAuthed aquí para forzar el render correcto sin refrescar.
+      // ✅ Mostrar estado
       renderLogin("Entrando…");
+
+      // ✅ FIX: forzar boot inmediato (no depender del listener)
       await bootAuthed();
+
+      // ✅ Watchdog 1: reintentar boot si sigue el login
+      setTimeout(() => {
+        if (isLoginScreenVisible()) {
+          bootAuthed();
+        }
+      }, 600);
+
+      // ✅ Watchdog 2: si después de 3s sigue el login, refrescar (la sesión ya existe)
+      setTimeout(() => {
+        if (isLoginScreenVisible()) {
+          window.location.reload();
+        }
+      }, 3000);
     } catch (err) {
       console.error("[login exception]", err);
       renderLogin("Error inesperado al iniciar sesión.", true);
@@ -270,6 +291,7 @@ function renderRegister(msg = "", isError = false) {
 
 // ── Data loaders ──────────────────────────────────────────
 async function loadProfileAndOrg(userId) {
+  // ✅ maybeSingle evita 406 si no existe fila
   const { data: profile0, error: pErr0 } = await supabase
     .from("profiles")
     .select("*")
@@ -281,6 +303,7 @@ async function loadProfileAndOrg(userId) {
     return { profile: null, organization: null };
   }
 
+  // ✅ Si no existe, lo creamos (usuarios viejos / trigger no corrió)
   let profile = profile0;
   if (!profile) {
     const { error: iErr } = await supabase.from("profiles").insert({ id: userId });
@@ -403,6 +426,7 @@ function renderNoOrgScreen() {
 async function renderDashboard(route) {
   const currentRoute = (route || "").replace(/^#/, "");
 
+  // Sin org → onboarding
   if (!window.appState.profile?.organization_id) {
     renderNoOrgScreen();
     return;
@@ -410,6 +434,7 @@ async function renderDashboard(route) {
 
   const topbarHtml = renderTopBar(currentRoute);
 
+  // ─ Home ─
   if (!currentRoute) {
     const proj = window.appState.project;
     app.innerHTML = `
@@ -455,6 +480,7 @@ async function renderDashboard(route) {
     return;
   }
 
+  // ─ Presupuesto ─
   if (currentRoute === "presupuesto") {
     let mod;
     try {
@@ -486,6 +512,7 @@ async function renderDashboard(route) {
     return;
   }
 
+  // ─ Proyectos ─
   if (currentRoute === "proyectos") {
     let mod;
     try {
@@ -505,6 +532,7 @@ async function renderDashboard(route) {
     return;
   }
 
+  // ─ Gastos ─
   if (currentRoute === "gastos") {
     let mod;
     try {
@@ -524,6 +552,7 @@ async function renderDashboard(route) {
     return;
   }
 
+  // ─ Ejecución ─
   if (currentRoute === "ejecucion") {
     let mod;
     try {
@@ -543,6 +572,7 @@ async function renderDashboard(route) {
     return;
   }
 
+  // ─ Ruta no válida ─
   app.innerHTML = `
     ${topbarHtml}
     <div class="container" style="padding-top:24px;">
@@ -628,7 +658,15 @@ async function bootAuthed() {
     }
 
     startRouterOnce();
-    if (!window.location.hash) navigate("");
+
+    // ✅ FIX: forzar render inmediato (evita depender de hashchange / timing)
+    await renderDashboard(window.location.hash || "");
+
+    // Si no hay hash, deja home
+    if (!window.location.hash) {
+      // esto no dispara hashchange si ya estaba vacío, pero ya renderizamos arriba
+      // así que lo dejamos como está.
+    }
   } finally {
     _bootInFlight = false;
 
