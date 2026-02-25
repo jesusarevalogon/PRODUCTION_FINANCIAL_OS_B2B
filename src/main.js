@@ -167,7 +167,6 @@ function renderLogin(msg = "", isError = false) {
 
     setBtnLoading(btnLogin, true, "Entrar");
     try {
-      // ✅ Sin pre-signOut: evita que SIGNED_OUT dispare bootAuthed() en medio del login
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
         console.warn("[login error]", error.message);
@@ -175,7 +174,6 @@ function renderLogin(msg = "", isError = false) {
         return;
       }
       console.log("[login ok]", data.user?.email);
-      // onAuthStateChange (SIGNED_IN) hará el boot — solo indicamos que estamos entrando
       renderLogin("Entrando…");
     } catch (err) {
       console.error("[login exception]", err);
@@ -241,7 +239,6 @@ function renderRegister(msg = "", isError = false) {
 
 // ── Data loaders ──────────────────────────────────────────
 async function loadProfileAndOrg(userId) {
-  // ✅ maybeSingle evita el 406 cuando no hay filas
   const { data: profile0, error: pErr0 } = await supabase
     .from("profiles")
     .select("*")
@@ -253,7 +250,6 @@ async function loadProfileAndOrg(userId) {
     return { profile: null, organization: null };
   }
 
-  // ✅ Si el profile no existe (usuarios viejos / trigger no corrió), lo creamos
   let profile = profile0;
   if (!profile) {
     const { error: iErr } = await supabase.from("profiles").insert({ id: userId });
@@ -347,7 +343,6 @@ function renderNoOrgScreen() {
     </div>
   `;
 
-  // ✅ Logout también disponible en onboarding
   document.getElementById("btnLogoutOnboard")?.addEventListener("click", async () => {
     try {
       window.appState.project = null;
@@ -360,7 +355,6 @@ function renderNoOrgScreen() {
     }
   });
 
-  // Mantén tus listeners originales:
   document.getElementById("btnReload")?.addEventListener("click", () => {
     boot();
   });
@@ -377,7 +371,6 @@ function renderNoOrgScreen() {
 async function renderDashboard(route) {
   const currentRoute = (route || "").replace(/^#/, "");
 
-  // Sin org → onboarding
   if (!window.appState.profile?.organization_id) {
     renderNoOrgScreen();
     return;
@@ -385,7 +378,6 @@ async function renderDashboard(route) {
 
   const topbarHtml = renderTopBar(currentRoute);
 
-  // ─ Home ─
   if (!currentRoute) {
     const proj = window.appState.project;
     app.innerHTML = `
@@ -430,7 +422,6 @@ async function renderDashboard(route) {
     return;
   }
 
-  // ─ Presupuesto ─
   if (currentRoute === "presupuesto") {
     let mod;
     try { mod = await import("./modules/presupuesto.js"); } catch (e) {
@@ -456,7 +447,6 @@ async function renderDashboard(route) {
     return;
   }
 
-  // ─ Proyectos ─
   if (currentRoute === "proyectos") {
     let mod;
     try { mod = await import("./modules/proyectos.js"); } catch (e) {
@@ -472,7 +462,6 @@ async function renderDashboard(route) {
     return;
   }
 
-  // ─ Gastos ─
   if (currentRoute === "gastos") {
     let mod;
     try { mod = await import("./modules/gastos.js"); } catch (e) {
@@ -488,7 +477,6 @@ async function renderDashboard(route) {
     return;
   }
 
-  // ─ Ejecución ─
   if (currentRoute === "ejecucion") {
     let mod;
     try { mod = await import("./modules/ejecucion.js"); } catch (e) {
@@ -504,7 +492,6 @@ async function renderDashboard(route) {
     return;
   }
 
-  // ─ Ruta no válida ─
   app.innerHTML = `
     ${topbarHtml}
     <div class="container" style="padding-top:24px;">
@@ -583,7 +570,6 @@ async function bootAuthed() {
       return;
     }
 
-    // Cargar proyecto activo desde localStorage
     if (!window.appState.project) {
       const proj = await tryLoadActiveProject();
       window.appState.project = proj;
@@ -598,7 +584,6 @@ async function bootAuthed() {
     // ✅ Si hubo una llamada concurrente mientras corría, ejecuta 1 vez más
     if (_bootQueued) {
       _bootQueued = false;
-      // no awaits para evitar cadena larga dentro del finally; lo re-disparamos microtask
       Promise.resolve().then(() => bootAuthed());
     }
   }
@@ -607,10 +592,8 @@ async function bootAuthed() {
 async function boot() {
   ensureSupabase();
 
-  // ✅ Boot inicial (sin esperar al listener de auth)
   await bootAuthed();
 
-  // ✅ Suscripción única — manejamos cada evento por separado
   if (_authUnsubscribe) {
     try { _authUnsubscribe(); } catch {}
     _authUnsubscribe = null;
@@ -620,11 +603,9 @@ async function boot() {
     console.log("[auth change]", event);
 
     if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
-      // ✅ Sesión establecida o renovada — hacer boot completo
       await bootAuthed();
 
     } else if (event === "SIGNED_OUT") {
-      // ✅ Sesión cerrada — limpiar estado y mostrar login
       window.appState.user         = null;
       window.appState.profile      = null;
       window.appState.organization = null;
@@ -633,13 +614,10 @@ async function boot() {
       renderLogin("Sesión cerrada.");
 
     } else if (event === "INITIAL_SESSION") {
-      // ✅ Evento inicial al suscribirse: solo hacer boot si hay sesión
-      // y el boot inicial aún no cargó al usuario (evita doble boot)
       if (session && !window.appState.user) {
         await bootAuthed();
       }
     }
-    // PASSWORD_RECOVERY y otros eventos se ignoran intencionalmente
   });
 
   _authUnsubscribe = () => {
