@@ -57,22 +57,27 @@ export async function createExpense({
   if (!cuenta?.trim()) throw new Error("La cuenta es obligatoria.");
   if (!monto || Number(monto) <= 0) throw new Error("El monto debe ser mayor a 0.");
 
+  // Construir el objeto base con columnas que siempre existen
+  const insertData = {
+    organization_id: orgId,
+    project_id: projectId,
+    fecha,
+    cuenta: cuenta.trim(),
+    concepto: concepto?.trim() || null,
+    monto: Number(monto),
+    proveedor: proveedor?.trim() || null,
+    responsable: responsable?.trim() || null,
+    created_by: userId,
+  };
+  // Columnas opcionales: solo incluir si tienen valor para no fallar
+  // si la tabla aún no tiene esas columnas en Supabase.
+  if (budget_item_uid != null) insertData.budget_item_uid = budget_item_uid;
+  if (comprobante_path != null) insertData.comprobante_path = comprobante_path;
+  if (comprobante_name != null) insertData.comprobante_name = comprobante_name;
+
   const { data, error } = await supabase
     .from("expenses")
-    .insert({
-      organization_id: orgId,
-      project_id: projectId,
-      fecha,
-      cuenta: cuenta.trim(),
-      concepto: concepto?.trim() || null,
-      monto: Number(monto),
-      proveedor: proveedor?.trim() || null,
-      responsable: responsable?.trim() || null,
-      created_by: userId,
-      budget_item_uid: budget_item_uid || null,
-      comprobante_path: comprobante_path || null,
-      comprobante_name: comprobante_name || null,
-    })
+    .insert(insertData)
     .select()
     .single();
 
