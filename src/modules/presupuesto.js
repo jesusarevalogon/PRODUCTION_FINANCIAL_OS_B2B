@@ -1,52 +1,26 @@
 /* =========================================================
   src/modules/presupuesto.js
-  PRESUPUESTO V1 (localStorage) + CARGA MASIVA (paste Excel)
+  PRESUPUESTO PRODUCTORA — v2_productora
 
-  ✅ Etapa por gasto: PREPRODUCCIÓN | PRODUCCIÓN | POSTPRODUCCIÓN
-  ✅ Cuenta: solo nombre (lista fija)
-  ✅ Cantidad
-  ✅ Candado: NO permite 0 o negativos en monto/cantidad/plazo
-  ✅ Reglas:
-      - Subtotal = monto * cantidad * plazo
-      - IVA 16% SOLO si Entidad = FOCINE
-      - FOCINE => FormaPago siempre EFECTIVO (forzado)
-      - CENTRO => FormaPago siempre ESPECIE (forzado)
-      - TipoPago PROYECTO => Plazo = 1 (forzado)
-  ✅ Exportar PDF (usa services/presupuestoPdfExport.js)
-  ✅ Carga masiva: pegar TSV/CSV + preview + agregar en lote
-
-  ✅ AJUSTE QUIRÚRGICO (NUEVO):
-      - Selección múltiple en tabla (Ctrl/Cmd + click)
-      - Shift + click selecciona rango (opcional, incluido)
-      - Editar solo si hay 1 seleccionado
-      - Eliminar si hay 1+ seleccionados
-
-  ✅ V2 - PRIMER CAMBIO (PUNTUAL):
-      - ELIMINAR POR COMPLETO "CARTAS" Y "COTIZACIONES" DEL PRESUPUESTO
-        * Sin columnas COT/CARTA
-        * Sin inputs de archivo
-        * Sin campos cot/carta en datos, CSV ni carga masiva
-
-  ✅ FIX QUIRÚRGICO:
-      - Evitar crash: saveInFlight debe existir ANTES del primer renderAll()
-
-  ✅ NUEVO (AJUSTE QUIRÚRGICO SOLICITADO):
-      - Barra de búsqueda (texto) para coincidencias en gastos (Concepto / Cuenta / Entidad / Etapa)
-      - Filtro simple para visualización (Etapa: Todas + PRE/PROD/POST)
-      - Paginado en “pestaña” (20 en 20) + botón “Ver todos”
-
-  ✅ NUEVO (AJUSTE QUIRÚRGICO SOLICITADO - ESTE CAMBIO):
-      - En el modal de carga masiva, agregar scroll interno (cuando son muchas filas)
-        para poder bajar/subir y confirmar sin perder el botón.
+  Módulo Presupuesto Operación Real (Productora):
+  ✅ Métodos de pago: transferencia | efectivo | especie_productora
+  ✅ Factura por partida (booleano operativo)
+  ✅ IVA por partida: 16 | 8 | 0 | exento
+  ✅ Cálculo: subtotal = monto_unitario × cantidad
+  ✅ Resumen: EFECTIVO (transferencia+efectivo) vs ESPECIE (productora)
+  ✅ Migración lazy desde datos v1 (FOCINE/CENTRO/formaPago/plazo)
+  ✅ CSV import: normaliza valores legacy y acepta nuevos
+  ✅ Selección múltiple (Ctrl/Cmd + click, Shift + rango)
+  ✅ Paginado (20) + Ver todos, buscador, filtro etapa
+  ✅ Persistencia: project_state (module_key = "presupuesto")
 ========================================================= */
 
 import { exportarPresupuestoPDF } from "../services/presupuestoPdfExport.js";
 import { loadModuleState, saveModuleState } from "../services/stateService.js";
 
 /* =========================================================
-  ✅ CAMBIO QUIRÚRGICO:
   Exponer función global para que Documentación pueda abrir
-  la vista previa de Presupuesto igual que Ruta Crítica.
+  la vista previa de Presupuesto.
 ========================================================= */
 if (typeof window !== "undefined") {
   window.openPresupuestoPreview = function () {
@@ -58,19 +32,17 @@ if (typeof window !== "undefined") {
   };
 }
 
-const LS_KEY = "BUDGET_V1_ITEMS";
-const LS_SEQ = "BUDGET_V1_SEQ";
-
+// ─── Constantes ───────────────────────────────────────────
 const ETAPAS = ["PREPRODUCCIÓN", "PRODUCCIÓN", "POSTPRODUCCIÓN"];
-const ENTIDADES = ["FOCINE", "CENTRO", "INTERNO", "TERCEROS"];
-const FORMAS_PAGO = ["EFECTIVO", "ESPECIE"];
-const TIPOS_PAGO = ["PROYECTO", "DIA"];
 
-// ✅ Tus cuentas
+const PAYMENT_METHODS = ["transferencia", "efectivo", "especie_productora"];
+
+const IVA_TIPOS = [16, 8, 0, "exento"];
+
 const CUENTAS = [
   "DESARROLLO",
   "PREPRODUCCIÓN",
-  "PERSONAL DE DIRECCIÓN ",
+  "PERSONAL DE DIRECCIÓN",
   "PERSONAL DE CÁMARA",
   "PERSONAL DE ARTE",
   "PERSONAL DE SONIDO",
@@ -85,7 +57,7 @@ const CUENTAS = [
   "ALIMENTACIÓN",
   "HOSPEDAJE",
   "GASTOS EXTRA DE PRODUCCIÓN",
-  "GASTOS CONTABLES ",
+  "GASTOS CONTABLES",
   "GASTOS LEGALES",
   "EDICIÓN",
   "POSTPRODUCCIÓN DE SONIDO",
@@ -96,9 +68,26 @@ const CUENTAS = [
   "DELIVERIES",
   "RESGUARDO Y PROMOCIÓN IMCINE",
   "PÓLIZA DE SEGURO",
-  "CIERRE ADMINISTRATIVO FOCINE 2027",
+  "CIERRE ADMINISTRATIVO",
 ];
 
+// ─── Labels de display ────────────────────────────────────
+function labelPaymentMethod(pm) {
+  if (pm === "transferencia") return "Transferencia";
+  if (pm === "efectivo") return "Efectivo";
+  if (pm === "especie_productora") return "Especie";
+  return pm || "";
+}
+
+function labelIvaTipo(t) {
+  if (t === "exento") return "Exento";
+  if (t === 0 || t === "0") return "0%";
+  if (t === 8 || t === "8") return "8%";
+  if (t === 16 || t === "16") return "16%";
+  return String(t ?? "");
+}
+
+// ─── renderPresupuestoView ────────────────────────────────
 export function renderPresupuestoView() {
   const cuentasOptions = CUENTAS.map(
     (c) => `<option value="${escapeAttr(c)}">${escapeHtml(c)}</option>`
@@ -113,6 +102,14 @@ export function renderPresupuestoView() {
     ...ETAPAS.map((e) => `<option value="${escapeAttr(e)}">${escapeHtml(e)}</option>`),
   ].join("");
 
+  const paymentMethodOptions = PAYMENT_METHODS.map(
+    (pm) => `<option value="${pm}">${escapeHtml(labelPaymentMethod(pm))}</option>`
+  ).join("");
+
+  const ivaTipoOptions = IVA_TIPOS.map(
+    (t) => `<option value="${t}">${escapeHtml(labelIvaTipo(t))}</option>`
+  ).join("");
+
   return `
     <div class="grid">
       <div class="card">
@@ -123,11 +120,8 @@ export function renderPresupuestoView() {
           <table class="table" id="budgetSummaryTable">
             <thead>
               <tr>
-                <th>Entidad</th>
-                <th>EFECTIVO</th>
-                <th>ESPECIE</th>
+                <th>Tipo</th>
                 <th>Total</th>
-                <th>%</th>
               </tr>
             </thead>
             <tbody id="budgetSummaryTbody"></tbody>
@@ -151,7 +145,7 @@ export function renderPresupuestoView() {
 
         <hr class="hr" />
         <p class="muted">
-          Modo actual: <b>V1_LOCAL_ONLY</b>
+          Modo actual: <b>V2_PRODUCTORA</b>
         </p>
       </div>
     </div>
@@ -160,7 +154,6 @@ export function renderPresupuestoView() {
       <h2>Desglose</h2>
       <p class="muted">Tip: Ctrl/Cmd + click para seleccionar varios. Shift + click para rango.</p>
 
-      <!-- ✅ NUEVO: Buscador + filtro + pestañas (paginado / todos) -->
       <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:10px 0 12px;">
         <div style="flex:1; min-width:220px;">
           <input id="bgSearchInput" type="text" placeholder="Buscar (concepto, cuenta, entidad, etapa)…"
@@ -179,7 +172,6 @@ export function renderPresupuestoView() {
         </div>
       </div>
 
-      <!-- ✅ NUEVO: Controles paginado -->
       <div id="bgPagerBar" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:-2px 0 10px;">
         <button id="bgPagePrev" class="btn btn-light">←</button>
         <div class="muted" id="bgPageInfo">Página 1 / 1</div>
@@ -196,11 +188,10 @@ export function renderPresupuestoView() {
               <th>Concepto</th>
               <th>Cuenta</th>
               <th>Entidad</th>
-              <th>Forma de pago</th>
-              <th>Tipo de pago</th>
+              <th>Método de pago</th>
+              <th>Factura</th>
               <th>Monto</th>
               <th>Cantidad</th>
-              <th>Plazo</th>
               <th>Subtotal</th>
               <th>IVA</th>
               <th>Total</th>
@@ -215,7 +206,7 @@ export function renderPresupuestoView() {
     <div id="bgModalBackdrop" class="modal-backdrop" style="display:none;">
       <div class="modal">
         <div class="modal-header">
-          <h3 id="bgModalTitle">Crear gasto</h3>
+          <h3 id="bgModalTitle">Crear partida</h3>
           <button id="bgModalClose" class="modal-close" aria-label="Cerrar">✕</button>
         </div>
 
@@ -237,44 +228,33 @@ export function renderPresupuestoView() {
             </label>
 
             <label>
-              <span>Entidad</span>
-              <select id="bgEntidad">
-                <option value="FOCINE">FOCINE</option>
-                <option value="CENTRO">CENTRO</option>
-                <option value="INTERNO">INTERNO</option>
-                <option value="TERCEROS">TERCEROS</option>
-              </select>
+              <span>Entidad (proveedor / área)</span>
+              <input id="bgEntidad" type="text" placeholder="Ej. Proveedor XYZ" />
             </label>
 
             <label>
-              <span>Forma de pago</span>
-              <select id="bgFormaPago">
-                <option value="EFECTIVO">EFECTIVO</option>
-                <option value="ESPECIE">ESPECIE</option>
-              </select>
+              <span>Método de pago</span>
+              <select id="bgPaymentMethod">${paymentMethodOptions}</select>
+            </label>
+
+            <label style="display:flex; align-items:center; gap:12px; cursor:pointer;">
+              <span>Facturado</span>
+              <input id="bgFacturado" type="checkbox" style="width:18px; height:18px; cursor:pointer;" />
             </label>
 
             <label>
-              <span>Tipo de pago</span>
-              <select id="bgTipoPago">
-                <option value="PROYECTO">PROYECTO</option>
-                <option value="DIA">DÍA</option>
-              </select>
+              <span>IVA</span>
+              <select id="bgIvaTipo">${ivaTipoOptions}</select>
             </label>
 
             <label>
-              <span>Monto (costo unidad)</span>
+              <span>Monto unitario</span>
               <input id="bgMonto" type="number" min="0.01" step="0.01" placeholder="0.00" />
             </label>
 
             <label>
               <span>Cantidad</span>
               <input id="bgCantidad" type="number" min="1" step="1" placeholder="1" />
-            </label>
-
-            <label>
-              <span>Plazo</span>
-              <input id="bgPlazo" type="number" min="1" step="1" placeholder="1" />
             </label>
           </div>
 
@@ -290,17 +270,25 @@ export function renderPresupuestoView() {
 
     <!-- Modal Carga Masiva -->
     <div id="bgBulkBackdrop" class="modal-backdrop" style="display:none;">
-      <div class="modal" style="max-width: 1020px; display:flex; flex-direction:column; max-height: 88vh;">
+      <div class="modal" style="max-width: 1080px; display:flex; flex-direction:column; max-height: 88vh;">
         <div class="modal-header">
-          <h3>Carga masiva (pegar desde Excel)</h3>
+          <h3>Carga masiva (CSV / XLSX)</h3>
           <button id="bgBulkClose" class="modal-close" aria-label="Cerrar">✕</button>
         </div>
 
         <div class="modal-body" style="flex:1 1 auto; overflow:auto;">
           <p class="muted" style="margin:0 0 10px;">
-            Formato recomendado (tabulado):
+            Columnas requeridas:
             <br/>
-            <b>ETAPA | CONCEPTO | CUENTA | ENTIDAD | FORMA_PAGO | TIPO_PAGO | MONTO | CANTIDAD | PLAZO</b>
+            <b>ETAPA | CONCEPTO | CUENTA | ENTIDAD | PAYMENT_METHOD | FACTURADO | MONTO | CANTIDAD | IVA_TIPO</b>
+            <br/>
+            <small>
+              PAYMENT_METHOD: <code>transferencia</code> / <code>efectivo</code> / <code>especie_productora</code>
+              &nbsp;·&nbsp;
+              IVA_TIPO: <code>16</code> / <code>8</code> / <code>0</code> / <code>exento</code>
+              &nbsp;·&nbsp;
+              FACTURADO: <code>si</code> / <code>no</code> / <code>true</code> / <code>false</code>
+            </small>
           </p>
 
           <div class="rc-actions" style="margin:10px 0 10px; gap:10px; flex-wrap:wrap;">
@@ -308,18 +296,18 @@ export function renderPresupuestoView() {
             <button id="bgBulkLoadFile" class="btn btn-light" type="button">Cargar archivo (CSV/XLSX)</button>
             <button id="bgBulkTemplate" class="btn btn-light" type="button">Descargar plantilla CSV</button>
             <div class="muted" style="flex:1; min-width:220px;">
-              Tip: para evitar que “se corran” columnas, usa la plantilla XLSX con listas o importa CSV desde archivo.
+              Tip: descarga la plantilla para obtener el formato correcto.
             </div>
           </div>
 
-          <textarea id="bgBulkText" style="width:100%; height:160px; resize:vertical;"
-placeholder="ETAPA	CONCEPTO	CUENTA	ENTIDAD	FORMA_PAGO	TIPO_PAGO	MONTO	CANTIDAD	PLAZO
-PREPRODUCCIÓN	Renta cámara	PERSONAL DE CÁMARA	FOCINE	EFECTIVO	DIA	5000	1	3"></textarea>
+          <textarea id="bgBulkText" style="width:100%; height:140px; resize:vertical;"
+placeholder="ETAPA	CONCEPTO	CUENTA	ENTIDAD	PAYMENT_METHOD	FACTURADO	MONTO	CANTIDAD	IVA_TIPO
+PREPRODUCCIÓN	Renta cámara	EQUIPO DE CÁMARA	Proveedor XYZ	transferencia	false	5000	1	16"></textarea>
 
           <div class="rc-actions" style="position:sticky; bottom:0; padding:10px 0; margin-top:10px; background:#0f0f10;">
             <button id="bgBulkPreview" class="btn btn-secondary">Previsualizar</button>
             <div style="flex:1"></div>
-            <button id="bgBulkCommit" class="btn btn-primary" disabled>Agregar 0 gastos</button>
+            <button id="bgBulkCommit" class="btn btn-primary" disabled>Agregar 0 partidas</button>
           </div>
 
           <div id="bgBulkErrors" class="muted" style="display:none; margin-top:10px;"></div>
@@ -333,11 +321,11 @@ PREPRODUCCIÓN	Renta cámara	PERSONAL DE CÁMARA	FOCINE	EFECTIVO	DIA	5000	1	3"><
                   <th>Concepto</th>
                   <th>Cuenta</th>
                   <th>Entidad</th>
-                  <th>Forma</th>
-                  <th>Tipo pago</th>
+                  <th>Método</th>
+                  <th>Factura</th>
                   <th>Monto</th>
-                  <th>Cantidad</th>
-                  <th>Plazo</th>
+                  <th>Cant.</th>
+                  <th>IVA</th>
                   <th>Total</th>
                 </tr>
               </thead>
@@ -354,7 +342,9 @@ PREPRODUCCIÓN	Renta cámara	PERSONAL DE CÁMARA	FOCINE	EFECTIVO	DIA	5000	1	3"><
   `;
 }
 
+// ─── bindPresupuestoEvents ────────────────────────────────
 export async function bindPresupuestoEvents() {
+  // ── DOM refs ──
   const summaryTbody = document.getElementById("budgetSummaryTbody");
   const tbody = document.getElementById("budgetTbody");
 
@@ -365,7 +355,6 @@ export async function bindPresupuestoEvents() {
   const btnExportarPDF = document.getElementById("bgBtnExportarPDF");
   const btnCargaMasiva = document.getElementById("bgBtnCargaMasiva");
 
-  // ✅ NUEVO: UI buscador/filtro/paginado
   const inpSearch = document.getElementById("bgSearchInput");
   const selFilterEtapa = document.getElementById("bgFilterEtapa");
   const btnTabPaged = document.getElementById("bgTabPaged");
@@ -387,12 +376,12 @@ export async function bindPresupuestoEvents() {
   const selEtapa = document.getElementById("bgEtapa");
   const inpConcepto = document.getElementById("bgConcepto");
   const selCuenta = document.getElementById("bgCuenta");
-  const selEntidad = document.getElementById("bgEntidad");
-  const selFormaPago = document.getElementById("bgFormaPago");
-  const selTipoPago = document.getElementById("bgTipoPago");
+  const inpEntidad = document.getElementById("bgEntidad");
+  const selPaymentMethod = document.getElementById("bgPaymentMethod");
+  const chkFacturado = document.getElementById("bgFacturado");
+  const selIvaTipo = document.getElementById("bgIvaTipo");
   const inpMonto = document.getElementById("bgMonto");
   const inpCantidad = document.getElementById("bgCantidad");
-  const inpPlazo = document.getElementById("bgPlazo");
 
   // Modal carga masiva
   const bulkBackdrop = document.getElementById("bgBulkBackdrop");
@@ -409,27 +398,47 @@ export async function bindPresupuestoEvents() {
 
   const userId = window?.appState?.user?.id;
   const projectId = window?.appState?.project?.id;
-  if (!userId || !projectId) throw new Error("Sesión o proyecto no inicializado. Selecciona un proyecto en la sección Proyectos.");
+  if (!userId || !projectId) {
+    throw new Error("Sesión o proyecto no inicializado. Selecciona un proyecto en la sección Proyectos.");
+  }
 
-  const MODULE_KEY = "presupuesto";
+  const MOD_KEY = "presupuesto";
 
-  // ✅ estado server
+  // ── Estado ──
   let seq = 0;
   let items = [];
 
+  // ── Cargar + migrar ──
   try {
-    const serverState = await loadModuleState({ userId, projectId, moduleKey: MODULE_KEY });
-    items = Array.isArray(serverState?.items) ? serverState.items : [];
-    seq = Number.isFinite(Number(serverState?.seq)) ? Number(serverState.seq) : 0;
+    const rawState = await loadModuleState({ userId, projectId, moduleKey: MOD_KEY });
+    const migrated = migrateStateIfNeeded(rawState);
+    items = Array.isArray(migrated?.items) ? migrated.items : [];
+    seq = Number.isFinite(Number(migrated?.seq)) ? Number(migrated.seq) : 0;
+
+    // Si hubo migración, persistir de inmediato
+    if (migrated !== rawState) {
+      await saveModuleState({
+        userId,
+        projectId,
+        moduleKey: MOD_KEY,
+        data: buildSaveData(),
+      }).catch((e) => console.warn("[presupuesto] auto-save post-migración falló:", e));
+    }
   } catch (e) {
     throw new Error(`No pude cargar Presupuesto desde servidor: ${e?.message || String(e)}`);
   }
 
-  /* =========================================================
-    ✅ FIX QUIRÚRGICO:
-    Declarar saveInFlight ANTES del primer renderAll()
-  ========================================================= */
+  // ── saveInFlight ANTES del primer renderAll ──
   let saveInFlight = Promise.resolve();
+
+  function buildSaveData() {
+    return {
+      version: "v2_productora",
+      seq,
+      items,
+      meta: { updatedAt: new Date().toISOString(), notes: "" },
+    };
+  }
 
   function saveItemsAsync() {
     saveInFlight = saveInFlight
@@ -438,11 +447,10 @@ export async function bindPresupuestoEvents() {
         saveModuleState({
           userId,
           projectId,
-          moduleKey: MODULE_KEY,
-          data: { seq, items },
+          moduleKey: MOD_KEY,
+          data: buildSaveData(),
         })
       );
-
     return saveInFlight;
   }
 
@@ -452,36 +460,29 @@ export async function bindPresupuestoEvents() {
   }
 
   function mkUid() {
-    return crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now());
+    return crypto?.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now();
   }
 
-  // ✅ selección múltiple
+  // ── Selección múltiple ──
   let selectedUids = new Set();
   let lastClickedUid = null;
 
   let modalMode = "create";
-
-  // bulk state
   let bulkParsed = [];
 
-  // ✅ NUEVO: estado UI (filtro/busqueda/paginado)
+  // ── Estado UI (filtro / búsqueda / paginado) ──
   const PAGE_SIZE = 20;
   let uiSearch = "";
-  let uiFilterEtapa = ""; // "" => todas
-  let uiViewAll = false; // false => paginado (20)
-  let uiPage = 0; // 0-based
+  let uiFilterEtapa = "";
+  let uiViewAll = false;
+  let uiPage = 0;
 
-  // init pestañas UI
-  if (btnTabPaged && btnTabAll) {
-    setTabButtons();
-  }
-  if (pagerBar) {
-    pagerBar.style.display = uiViewAll ? "none" : "flex";
-  }
+  if (btnTabPaged && btnTabAll) setTabButtons();
+  if (pagerBar) pagerBar.style.display = uiViewAll ? "none" : "flex";
 
   renderAll();
 
-  // Acciones
+  // ── Listeners ──
   btnCrear.addEventListener("click", () => openModal("create"));
   btnEditar.addEventListener("click", () => openModal("edit"));
   btnEliminar.addEventListener("click", deleteSelected);
@@ -499,7 +500,6 @@ export async function bindPresupuestoEvents() {
     }
   });
 
-  // Carga masiva
   btnCargaMasiva.addEventListener("click", openBulkModal);
   bulkClose.addEventListener("click", closeBulkModal);
   bulkCancel.addEventListener("click", closeBulkModal);
@@ -508,14 +508,9 @@ export async function bindPresupuestoEvents() {
   });
   bulkPreview.addEventListener("click", previewBulk);
   bulkCommit.addEventListener("click", commitBulk);
-
-  // ✅ Importar desde archivo (CSV/XLSX)
-  bulkLoadFile?.addEventListener("click", () => {
-    void loadBulkFromFile();
-  });
+  bulkLoadFile?.addEventListener("click", () => { void loadBulkFromFile(); });
   bulkTemplate?.addEventListener("click", downloadBulkTemplateCSV);
 
-  // Modal create/edit
   modalClose.addEventListener("click", closeModal);
   modalCancel.addEventListener("click", closeModal);
   modalBackdrop.addEventListener("click", (e) => {
@@ -523,14 +518,11 @@ export async function bindPresupuestoEvents() {
   });
   modalSave.addEventListener("click", saveModal);
 
-  selEntidad.addEventListener("change", applyEntidadRulesToModal);
-  selTipoPago.addEventListener("change", applyTipoPagoRulesToModal);
+  selPaymentMethod.addEventListener("change", applyPaymentMethodRulesToModal);
 
   inpMonto.addEventListener("blur", () => clampInput(inpMonto, 0.01, false));
   inpCantidad.addEventListener("blur", () => clampInput(inpCantidad, 1, true));
-  inpPlazo.addEventListener("blur", () => clampInput(inpPlazo, 1, true));
 
-  // ✅ NUEVO: buscador + filtro + pestañas + paginado
   inpSearch?.addEventListener("input", () => {
     uiSearch = (inpSearch.value || "").trim();
     uiPage = 0;
@@ -570,8 +562,8 @@ export async function bindPresupuestoEvents() {
     renderTable();
   });
 
+  // ── Pestañas UI ──
   function setTabButtons() {
-    // Mantenerlo simple, sin depender de CSS global
     if (!btnTabPaged || !btnTabAll) return;
     const on = (btn) => {
       btn.style.border = "1px solid rgba(0,0,0,.12)";
@@ -583,14 +575,11 @@ export async function bindPresupuestoEvents() {
       btn.style.fontWeight = "700";
       btn.style.opacity = ".75";
     };
-    if (uiViewAll) {
-      off(btnTabPaged);
-      on(btnTabAll);
-    } else {
-      on(btnTabPaged);
-      off(btnTabAll);
-    }
+    if (uiViewAll) { off(btnTabPaged); on(btnTabAll); }
+    else { on(btnTabPaged); off(btnTabAll); }
   }
+
+  // ── Normalización / migración ──
 
   function normalizeEtapa(v) {
     const s = norm(v);
@@ -600,88 +589,161 @@ export async function bindPresupuestoEvents() {
     return null;
   }
 
-  function normalizeEntidad(v) {
-    const s = norm(v);
-    if (s === "FOCINE") return "FOCINE";
-    if (s === "CENTRO") return "CENTRO";
-    if (s === "INTERNO") return "INTERNO";
-    if (s === "TERCEROS") return "TERCEROS";
+  function normalizePaymentMethod(v) {
+    const s = norm(v || "");
+    if (s === "TRANSFERENCIA") return "transferencia";
+    if (s === "EFECTIVO") return "efectivo";
+    if (s === "ESPECIE_PRODUCTORA" || s === "ESPECIE PRODUCTORA") return "especie_productora";
+    // Compat: valores legacy CSV / formaPago viejo
+    if (s === "ESPECIE") return "especie_productora";
+    if (["TARJETA", "DEPOSITO", "PAYPAL", "SPEI", "BANCO"].includes(s)) return "transferencia";
     return null;
   }
 
-  function normalizeTipoPago(v) {
-    const s = norm(v);
-    if (s === "PROYECTO") return "PROYECTO";
-    if (s === "DIA" || s === "DÍA") return "DIA";
+  function normalizeIvaTipo(v) {
+    const s = norm(String(v ?? ""));
+    if (s === "16") return 16;
+    if (s === "8") return 8;
+    if (s === "0") return 0;
+    if (s === "EXENTO") return "exento";
     return null;
   }
 
-  function normalizeFormaPago(v) {
-    const s = norm(v);
-    if (s === "EFECTIVO") return "EFECTIVO";
-    if (s === "ESPECIE") return "ESPECIE";
+  function normalizeFacturado(v) {
+    const s = norm(String(v ?? ""));
+    if (s === "SI" || s === "TRUE" || s === "1" || s === "YES") return true;
+    if (s === "NO" || s === "FALSE" || s === "0") return false;
     return null;
   }
 
   function normalizeCuenta(v) {
-    const raw = (v ?? "").toString().trim();
-    const target = norm(raw);
+    const target = norm((v ?? "").toString().trim());
     const found = CUENTAS.find((c) => norm(c) === target);
     return found || null;
   }
 
-  function applyFormaRules(entidad, formaRaw) {
-    if (entidad === "FOCINE") return "EFECTIVO";
-    if (entidad === "CENTRO") return "ESPECIE";
-    return formaRaw || "EFECTIVO";
+  // Mapeo backward-compat: formaPago + entidad (viejo) → payment_method (nuevo)
+  function migratePaymentMethod(formaPago, entidad) {
+    const f = norm(formaPago || "");
+    const e = norm(entidad || "");
+    // ESPECIE viejo o CENTRO (siempre especie) → especie_productora
+    if (f === "ESPECIE" || e === "CENTRO") return "especie_productora";
+    // EFECTIVO viejo → efectivo
+    if (f === "EFECTIVO") return "efectivo";
+    // Otros aliases de transferencia
+    if (["TARJETA", "DEPOSITO", "PAYPAL", "SPEI", "BANCO"].includes(f)) return "transferencia";
+    // Default
+    return "transferencia";
   }
 
-  function normalizeItem(it) {
-    const entidad = it.entidad;
-    const formaPago = applyFormaRules(entidad, (it.formaPago || "EFECTIVO").toUpperCase());
+  // Migrar un item individual del schema v1 al v2_productora
+  function migrateOldItem(old) {
+    const pm = migratePaymentMethod(old.formaPago, old.entidad);
+    const isEspecie = pm === "especie_productora";
 
-    let plazo = parseInt(it.plazo ?? 1, 10);
-    if (!Number.isFinite(plazo) || plazo < 1) plazo = 1;
-    if (it.tipoPago === "PROYECTO") plazo = 1;
+    const iva_tipo = isEspecie ? "exento" : 16;
+    const facturado = false;
+
+    // Absorber plazo en monto_unitario para preservar valor financiero
+    const oldMonto = toPositiveNumber(old.monto ?? old.monto_unitario, 0.01);
+    const oldPlazo = parseInt(old.plazo, 10) || 1;
+    const monto_unitario = round2(oldMonto * oldPlazo);
+    const cantidad = parseInt(old.cantidad, 10) || 1;
+
+    const subtotal = round2(monto_unitario * cantidad);
+    const iva_monto = iva_tipo === "exento" ? 0 : round2(subtotal * (iva_tipo / 100));
+    const total = round2(subtotal + iva_monto);
+
+    return {
+      uid: old.uid || mkUid(),
+      etapa: old.etapa,
+      concepto: (old.concepto || "").trim(),
+      cuenta: old.cuenta,
+      entidad: (old.entidad || "").trim(),
+      payment_method: pm,
+      facturado,
+      monto_unitario,
+      cantidad,
+      iva_tipo,
+      subtotal,
+      iva_monto,
+      total,
+      createdAt: old.createdAt ?? Date.now(),
+      updatedAt: Date.now(),
+    };
+  }
+
+  // Detectar si un item ya tiene schema v2
+  function isV2Item(it) {
+    return it.payment_method !== undefined && it.monto_unitario !== undefined;
+  }
+
+  // Migración lazy del estado completo
+  function migrateStateIfNeeded(rawState) {
+    if (!rawState) return rawState;
+    // Si ya es v2_productora, no migrar
+    if (rawState.version === "v2_productora") return rawState;
+
+    const rawItems = Array.isArray(rawState.items) ? rawState.items : [];
+    const migratedItems = rawItems.map((it) => {
+      if (isV2Item(it)) return normalizeItem(it); // ya migrado, solo normalizar
+      return migrateOldItem(it);
+    });
+
+    return {
+      version: "v2_productora",
+      seq: rawState.seq || 0,
+      items: migratedItems,
+      meta: { updatedAt: new Date().toISOString(), notes: "" },
+    };
+  }
+
+  // Motor de cálculo único (función pura)
+  function normalizeItem(it) {
+    const pm = normalizePaymentMethod(it.payment_method) || "transferencia";
+    const isEspecie = pm === "especie_productora";
+
+    // IVA: especie siempre exento
+    let iva_tipo = isEspecie ? "exento" : (it.iva_tipo ?? 16);
+    if (!IVA_TIPOS.includes(iva_tipo)) iva_tipo = isEspecie ? "exento" : 16;
+
+    // Facturado: especie siempre false
+    const facturado = isEspecie ? false : Boolean(it.facturado ?? false);
 
     let cantidad = parseInt(it.cantidad ?? 1, 10);
     if (!Number.isFinite(cantidad) || cantidad < 1) cantidad = 1;
 
-    const monto = toPositiveNumber(it.monto, 0.01);
-
-    const subtotal = round2(monto * plazo * cantidad);
-    const iva = entidad === "FOCINE" ? round2(subtotal * 0.16) : 0;
-    const total = round2(subtotal + iva);
+    const monto_unitario = toPositiveNumber(it.monto_unitario, 0.01);
+    const subtotal = round2(monto_unitario * cantidad);
+    const iva_monto = iva_tipo === "exento" ? 0 : round2(subtotal * (iva_tipo / 100));
+    const total = round2(subtotal + iva_monto);
 
     return {
       uid: it.uid || mkUid(),
-      folio: it.folio ?? null,
       etapa: it.etapa,
       concepto: (it.concepto || "").trim(),
       cuenta: it.cuenta,
-      entidad,
-      formaPago,
-      tipoPago: it.tipoPago,
-      monto,
+      entidad: (it.entidad || "").trim(),
+      payment_method: pm,
+      facturado,
+      monto_unitario,
       cantidad,
-      plazo,
+      iva_tipo,
       subtotal,
-      iva,
+      iva_monto,
       total,
       createdAt: it.createdAt ?? Date.now(),
       updatedAt: it.updatedAt ?? Date.now(),
     };
   }
 
+  // ── Render ──
+
   function renderAll() {
     items = items.map((x) => {
       const etapa = normalizeEtapa(x.etapa) || ETAPAS[0];
-      const entidad = normalizeEntidad(x.entidad) || "FOCINE";
-      const tipoPago = normalizeTipoPago(x.tipoPago) || "PROYECTO";
       const cuenta = normalizeCuenta(x.cuenta) || CUENTAS[0];
-      const forma = normalizeFormaPago(x.formaPago) || "EFECTIVO";
-
-      return normalizeItem({ ...x, etapa, entidad, tipoPago, cuenta, formaPago: forma });
+      return normalizeItem({ ...x, etapa, cuenta });
     });
 
     const valid = new Set(items.map((x) => x.uid));
@@ -702,89 +764,92 @@ export async function bindPresupuestoEvents() {
   }
 
   function renderSummary() {
-    const totals = {
-      FOCINE: { efectivo: 0, especie: 0 },
-      CENTRO: { efectivo: 0, especie: 0 },
-      INTERNO: { efectivo: 0, especie: 0 },
-      TERCEROS: { efectivo: 0, especie: 0 },
-    };
+    // Acumuladores por etapa × tipo
+    const byEtapaEfectivo = {};
+    const byEtapaEspecie = {};
+    ETAPAS.forEach((e) => { byEtapaEfectivo[e] = 0; byEtapaEspecie[e] = 0; });
+
+    let totalEfectivo = 0;
+    let totalEspecie = 0;
 
     items.forEach((it) => {
-      const e = it.entidad;
-      if (it.formaPago === "EFECTIVO") totals[e].efectivo += it.total;
-      if (it.formaPago === "ESPECIE") totals[e].especie += it.total;
+      const etapa = it.etapa || ETAPAS[0];
+      if (it.payment_method === "especie_productora") {
+        byEtapaEspecie[etapa] = (byEtapaEspecie[etapa] || 0) + it.total;
+        totalEspecie += it.total;
+      } else {
+        byEtapaEfectivo[etapa] = (byEtapaEfectivo[etapa] || 0) + it.total;
+        totalEfectivo += it.total;
+      }
     });
 
-    const rows = ["FOCINE", "CENTRO", "INTERNO", "TERCEROS"];
-    const grandTotal = rows.reduce((acc, e) => acc + totals[e].efectivo + totals[e].especie, 0);
+    totalEfectivo = round2(totalEfectivo);
+    totalEspecie = round2(totalEspecie);
+    const totalProyecto = round2(totalEfectivo + totalEspecie);
 
     summaryTbody.innerHTML = "";
-    rows.forEach((e) => {
-      const efectivo = round2(totals[e].efectivo);
-      const especie = round2(totals[e].especie);
-      const total = round2(efectivo + especie);
-      const pct = grandTotal > 0 ? round2((total / grandTotal) * 100) : 0;
 
+    // Sección EFECTIVO
+    const trEfHdr = document.createElement("tr");
+    trEfHdr.innerHTML = `<td colspan="2" style="font-weight:900; background:rgba(255,255,255,.06); padding:8px 10px; letter-spacing:.3px;">EFECTIVO (transferencia + efectivo)</td>`;
+    summaryTbody.appendChild(trEfHdr);
+
+    ETAPAS.forEach((etapa) => {
+      const v = round2(byEtapaEfectivo[etapa] || 0);
+      if (!v) return;
       const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${escapeHtml(e)}</td>
-        <td>${money(efectivo)}</td>
-        <td>${money(especie)}</td>
-        <td><b>${money(total)}</b></td>
-        <td><b>${pct.toFixed(1)}%</b></td>
-      `;
+      tr.innerHTML = `<td style="padding-left:22px;">${escapeHtml(etapa)}</td><td>${money(v)}</td>`;
       summaryTbody.appendChild(tr);
     });
 
-    const totalEfectivo = rows.reduce((a, e) => a + totals[e].efectivo, 0);
-    const totalEspecie = rows.reduce((a, e) => a + totals[e].especie, 0);
+    const trEfTotal = document.createElement("tr");
+    trEfTotal.innerHTML = `<td><b>Total Efectivo</b></td><td><b>${money(totalEfectivo)}</b></td>`;
+    summaryTbody.appendChild(trEfTotal);
 
-    const trTotal = document.createElement("tr");
-    trTotal.innerHTML = `
-      <td><b>Totales</b></td>
-      <td><b>${money(round2(totalEfectivo))}</b></td>
-      <td><b>${money(round2(totalEspecie))}</b></td>
-      <td><b>${money(round2(totalEfectivo + totalEspecie))}</b></td>
-      <td><b>100%</b></td>
+    // Sección ESPECIE
+    const trEsHdr = document.createElement("tr");
+    trEsHdr.innerHTML = `<td colspan="2" style="font-weight:900; background:rgba(255,255,255,.06); padding:8px 10px; letter-spacing:.3px;">ESPECIE (productora)</td>`;
+    summaryTbody.appendChild(trEsHdr);
+
+    ETAPAS.forEach((etapa) => {
+      const v = round2(byEtapaEspecie[etapa] || 0);
+      if (!v) return;
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td style="padding-left:22px;">${escapeHtml(etapa)}</td><td>${money(v)}</td>`;
+      summaryTbody.appendChild(tr);
+    });
+
+    const trEsTotal = document.createElement("tr");
+    trEsTotal.innerHTML = `<td><b>Total Especie</b></td><td><b>${money(totalEspecie)}</b></td>`;
+    summaryTbody.appendChild(trEsTotal);
+
+    // TOTAL PROYECTO
+    const trGrand = document.createElement("tr");
+    trGrand.innerHTML = `
+      <td style="border-top:2px solid rgba(255,255,255,.2);"><b>TOTAL PROYECTO</b></td>
+      <td style="border-top:2px solid rgba(255,255,255,.2);"><b style="font-size:1.1em;">${money(totalProyecto)}</b></td>
     `;
-    summaryTbody.appendChild(trTotal);
+    summaryTbody.appendChild(trGrand);
   }
 
-  // ✅ NUEVO: obtiene items filtrados + paginados (sin alterar items)
   function getFilteredAndPagedItems() {
     const q = norm(uiSearch);
     const etapaFilter = (uiFilterEtapa || "").trim();
 
     const filtered = items.filter((it) => {
       if (etapaFilter && it.etapa !== etapaFilter) return false;
-
       if (!q) return true;
-
-      const hay = [
-        it.concepto,
-        it.cuenta,
-        it.entidad,
-        it.etapa,
-        it.formaPago,
-        it.tipoPago,
-      ]
+      const hay = [it.concepto, it.cuenta, it.entidad, it.etapa, it.payment_method]
         .filter(Boolean)
         .map(norm)
         .join(" | ");
-
       return hay.includes(q);
     });
 
     const total = filtered.length;
 
     if (uiViewAll) {
-      return {
-        filtered,
-        pageItems: filtered,
-        total,
-        totalPages: 1,
-        page: 0,
-      };
+      return { filtered, pageItems: filtered, total, totalPages: 1, page: 0 };
     }
 
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -792,9 +857,7 @@ export async function bindPresupuestoEvents() {
     uiPage = safePage;
 
     const start = safePage * PAGE_SIZE;
-    const end = start + PAGE_SIZE;
-    const pageItems = filtered.slice(start, end);
-
+    const pageItems = filtered.slice(start, start + PAGE_SIZE);
     return { filtered, pageItems, total, totalPages, page: safePage };
   }
 
@@ -805,7 +868,6 @@ export async function bindPresupuestoEvents() {
     pageItems.forEach((it) => {
       const tr = document.createElement("tr");
       tr.dataset.uid = it.uid;
-
       if (selectedUids.has(it.uid)) tr.classList.add("is-selected");
 
       tr.innerHTML = `
@@ -813,13 +875,12 @@ export async function bindPresupuestoEvents() {
         <td>${escapeHtml(it.concepto)}</td>
         <td>${escapeHtml(it.cuenta)}</td>
         <td>${escapeHtml(it.entidad)}</td>
-        <td>${escapeHtml(it.formaPago)}</td>
-        <td>${escapeHtml(it.tipoPago)}</td>
-        <td>${money(it.monto)}</td>
-        <td>${escapeHtml(it.cantidad)}</td>
-        <td>${escapeHtml(it.plazo)}</td>
+        <td>${escapeHtml(labelPaymentMethod(it.payment_method))}</td>
+        <td>${it.facturado ? "Sí" : "—"}</td>
+        <td>${money(it.monto_unitario)}</td>
+        <td>${escapeHtml(String(it.cantidad))}</td>
         <td>${money(it.subtotal)}</td>
-        <td>${money(it.iva)}</td>
+        <td>${money(it.iva_monto)}</td>
         <td><b>${money(it.total)}</b></td>
       `;
 
@@ -827,7 +888,6 @@ export async function bindPresupuestoEvents() {
       tbody.appendChild(tr);
     });
 
-    // ✅ UI: page info + results
     if (resultsInfo) resultsInfo.textContent = `${total} resultado${total === 1 ? "" : "s"}`;
 
     if (uiViewAll) {
@@ -867,13 +927,11 @@ export async function bindPresupuestoEvents() {
     syncButtons();
   }
 
-  // ✅ rango en el contexto visible (página actual / tabla actual)
   function selectRange(fromUid, toUid, visibleItems) {
     const rowUids = (visibleItems || []).map((x) => x.uid);
     const a = rowUids.indexOf(fromUid);
     const b = rowUids.indexOf(toUid);
 
-    // Si no están ambos visibles, cae al comportamiento original (solo toUid)
     if (a === -1 || b === -1) {
       selectedUids = new Set([toUid]);
       lastClickedUid = toUid;
@@ -883,11 +941,8 @@ export async function bindPresupuestoEvents() {
     }
 
     const [start, end] = a < b ? [a, b] : [b, a];
-    const range = rowUids.slice(start, end + 1);
-
-    selectedUids = new Set(range);
+    selectedUids = new Set(rowUids.slice(start, end + 1));
     lastClickedUid = toUid;
-
     paintSelection();
     syncButtons();
   }
@@ -900,29 +955,22 @@ export async function bindPresupuestoEvents() {
     });
   }
 
-  function applyEntidadRulesToModal() {
-    const entidad = (selEntidad.value || "").toUpperCase();
-    if (entidad === "FOCINE") {
-      selFormaPago.value = "EFECTIVO";
-      selFormaPago.disabled = true;
-      return;
-    }
-    if (entidad === "CENTRO") {
-      selFormaPago.value = "ESPECIE";
-      selFormaPago.disabled = true;
-      return;
-    }
-    selFormaPago.disabled = false;
-  }
+  // ── Modal ──
 
-  function applyTipoPagoRulesToModal() {
-    const tipo = (selTipoPago.value || "").toUpperCase();
-    if (tipo === "PROYECTO") {
-      inpPlazo.value = "1";
-      inpPlazo.disabled = true;
-      return;
+  function applyPaymentMethodRulesToModal() {
+    const pm = selPaymentMethod.value;
+    const isEspecie = pm === "especie_productora";
+    if (isEspecie) {
+      chkFacturado.checked = false;
+      chkFacturado.disabled = true;
+      selIvaTipo.value = "exento";
+      selIvaTipo.disabled = true;
+    } else {
+      chkFacturado.disabled = false;
+      selIvaTipo.disabled = false;
+      // Al volver de especie, resetear IVA a 16 si estaba en exento
+      if (selIvaTipo.value === "exento") selIvaTipo.value = "16";
     }
-    inpPlazo.disabled = false;
   }
 
   function clampInput(inputEl, minValue, integerOnly) {
@@ -941,37 +989,36 @@ export async function bindPresupuestoEvents() {
     validationMsg.textContent = "";
 
     if (mode === "create") {
-      modalTitle.textContent = "Crear gasto";
+      modalTitle.textContent = "Crear partida";
       selEtapa.value = ETAPAS[0];
       inpConcepto.value = "";
       selCuenta.value = CUENTAS[0];
-      selEntidad.value = "FOCINE";
-      selFormaPago.value = "EFECTIVO";
-      selTipoPago.value = "PROYECTO";
+      inpEntidad.value = "";
+      selPaymentMethod.value = "transferencia";
+      chkFacturado.checked = false;
+      chkFacturado.disabled = false;
+      selIvaTipo.value = "16";
+      selIvaTipo.disabled = false;
       inpMonto.value = "";
       inpCantidad.value = "1";
-      inpPlazo.value = "1";
-      applyEntidadRulesToModal();
-      applyTipoPagoRulesToModal();
+      applyPaymentMethodRulesToModal();
     } else {
       if (selectedUids.size !== 1) return;
       const onlyUid = [...selectedUids][0];
-
       const it = items.find((x) => x.uid === onlyUid);
       if (!it) return;
 
-      modalTitle.textContent = "Editar gasto";
+      modalTitle.textContent = "Editar partida";
       selEtapa.value = it.etapa || ETAPAS[0];
       inpConcepto.value = it.concepto || "";
       selCuenta.value = it.cuenta || CUENTAS[0];
-      selEntidad.value = it.entidad || "FOCINE";
-      selFormaPago.value = it.formaPago || "EFECTIVO";
-      selTipoPago.value = it.tipoPago || "PROYECTO";
-      inpMonto.value = String(it.monto ?? "");
+      inpEntidad.value = it.entidad || "";
+      selPaymentMethod.value = it.payment_method || "transferencia";
+      chkFacturado.checked = Boolean(it.facturado);
+      selIvaTipo.value = String(it.iva_tipo ?? 16);
+      inpMonto.value = String(it.monto_unitario ?? "");
       inpCantidad.value = String(it.cantidad ?? 1);
-      inpPlazo.value = String(it.plazo ?? 1);
-      applyEntidadRulesToModal();
-      applyTipoPagoRulesToModal();
+      applyPaymentMethodRulesToModal();
     }
 
     modalBackdrop.style.display = "flex";
@@ -991,13 +1038,6 @@ export async function bindPresupuestoEvents() {
     const cantidad = parseInt(inpCantidad.value || "1", 10);
     if (!Number.isFinite(cantidad) || cantidad < 1) return "Cantidad debe ser 1 o mayor.";
 
-    const tipo = (selTipoPago.value || "").toUpperCase();
-    const plazo = parseInt(inpPlazo.value || "1", 10);
-
-    if (tipo !== "PROYECTO") {
-      if (!Number.isFinite(plazo) || plazo < 1) return "Plazo debe ser 1 o mayor.";
-    }
-
     const cuenta = (selCuenta.value || "").trim();
     if (!cuenta) return "Falta: Cuenta.";
 
@@ -1007,7 +1047,6 @@ export async function bindPresupuestoEvents() {
   async function saveModal() {
     clampInput(inpMonto, 0.01, false);
     clampInput(inpCantidad, 1, true);
-    clampInput(inpPlazo, 1, true);
 
     const err = validateForm();
     if (err) {
@@ -1018,42 +1057,27 @@ export async function bindPresupuestoEvents() {
 
     const etapa = selEtapa.value || ETAPAS[0];
     const cuenta = (selCuenta.value || CUENTAS[0]).trim();
-
-    const entidad = (selEntidad.value || "").toUpperCase();
-    let formaPago = (selFormaPago.value || "").toUpperCase();
-    const tipoPago = (selTipoPago.value || "").toUpperCase();
-
-    formaPago = applyFormaRules(entidad, formaPago);
-
-    const monto = toPositiveNumber(inpMonto.value, 0.01);
-
-    let plazo = parseInt(inpPlazo.value || "1", 10);
-    if (!Number.isFinite(plazo) || plazo < 1) plazo = 1;
-    if (tipoPago === "PROYECTO") plazo = 1;
-
+    const entidad = inpEntidad.value.trim();
+    const payment_method = selPaymentMethod.value || "transferencia";
+    const isEspecie = payment_method === "especie_productora";
+    const facturado = isEspecie ? false : chkFacturado.checked;
+    const iva_tipo = isEspecie ? "exento" : (normalizeIvaTipo(selIvaTipo.value) ?? 16);
+    const monto_unitario = toPositiveNumber(inpMonto.value, 0.01);
     let cantidad = parseInt(inpCantidad.value || "1", 10);
     if (!Number.isFinite(cantidad) || cantidad < 1) cantidad = 1;
-
-    const subtotal = round2(monto * plazo * cantidad);
-    const iva = entidad === "FOCINE" ? round2(subtotal * 0.16) : 0;
-    const total = round2(subtotal + iva);
 
     if (modalMode === "create") {
       const item = normalizeItem({
         uid: mkUid(),
-        folio: getNextSeqLocal(),
         etapa,
         concepto: inpConcepto.value.trim(),
         cuenta,
         entidad,
-        formaPago,
-        tipoPago,
-        monto,
+        payment_method,
+        facturado,
+        monto_unitario,
         cantidad,
-        plazo,
-        subtotal,
-        iva,
-        total,
+        iva_tipo,
       });
 
       items.push(item);
@@ -1064,14 +1088,12 @@ export async function bindPresupuestoEvents() {
       lastClickedUid = item.uid;
       paintSelection();
       syncButtons();
-
       closeModal();
       return;
     }
 
     if (selectedUids.size !== 1) return;
     const onlyUid = [...selectedUids][0];
-
     const idx = items.findIndex((x) => x.uid === onlyUid);
     if (idx === -1) return;
 
@@ -1081,14 +1103,11 @@ export async function bindPresupuestoEvents() {
       concepto: inpConcepto.value.trim(),
       cuenta,
       entidad,
-      formaPago,
-      tipoPago,
-      monto,
+      payment_method,
+      facturado,
+      monto_unitario,
       cantidad,
-      plazo,
-      subtotal,
-      iva,
-      total,
+      iva_tipo,
       updatedAt: Date.now(),
     });
 
@@ -1099,7 +1118,6 @@ export async function bindPresupuestoEvents() {
     lastClickedUid = items[idx].uid;
     paintSelection();
     syncButtons();
-
     closeModal();
   }
 
@@ -1110,29 +1128,27 @@ export async function bindPresupuestoEvents() {
     if (n === 1) {
       const uid = [...selectedUids][0];
       const it = items.find((x) => x.uid === uid);
-      const ok = confirm(`¿Eliminar "${it?.concepto || "gasto"}"?`);
+      const ok = confirm(`¿Eliminar "${it?.concepto || "partida"}"?`);
       if (!ok) return;
-
       items = items.filter((x) => x.uid !== uid);
       selectedUids.clear();
       lastClickedUid = null;
-
       await saveItemsAsync();
       renderAll();
       return;
     }
 
-    const ok = confirm(`¿Eliminar ${n} gastos seleccionados?`);
+    const ok = confirm(`¿Eliminar ${n} partidas seleccionadas?`);
     if (!ok) return;
-
     const toDelete = new Set(selectedUids);
     items = items.filter((x) => !toDelete.has(x.uid));
     selectedUids.clear();
     lastClickedUid = null;
-
     await saveItemsAsync();
     renderAll();
   }
+
+  // ── CSV export ──
 
   function csvEscape(v) {
     const s = (v ?? "").toString();
@@ -1142,18 +1158,17 @@ export async function bindPresupuestoEvents() {
 
   function downloadCSV() {
     const headers = [
-      "folio",
       "etapa",
       "concepto",
       "cuenta",
       "entidad",
-      "formaPago",
-      "tipoPago",
-      "monto",
+      "payment_method",
+      "facturado",
+      "monto_unitario",
       "cantidad",
-      "plazo",
+      "iva_tipo",
       "subtotal",
-      "iva",
+      "iva_monto",
       "total",
     ];
     const rows = items.map((it) => headers.map((h) => csvEscape(it[h] ?? "")).join(","));
@@ -1163,12 +1178,14 @@ export async function bindPresupuestoEvents() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "presupuesto_v2.csv";
+    a.download = "presupuesto_productora.csv";
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
   }
+
+  // ── Carga masiva ──
 
   async function loadBulkFromFile() {
     const file = bulkFile?.files?.[0];
@@ -1185,7 +1202,7 @@ export async function bindPresupuestoEvents() {
         const buf = await file.arrayBuffer();
         const rows = await parseXlsxBudgetRows(buf);
         if (!rows.length) {
-          alert("El archivo no contiene filas válidas en la hoja 'layout'.");
+          alert("El archivo no contiene filas válidas.");
           return;
         }
         bulkText.value = rowsToTSV(rows, true);
@@ -1193,7 +1210,6 @@ export async function bindPresupuestoEvents() {
         return;
       }
 
-      // CSV
       const text = await file.text();
       const rows = parseCSVToRows(text);
       const normed = mapRowsToBudgetLayout(rows);
@@ -1209,14 +1225,20 @@ export async function bindPresupuestoEvents() {
   }
 
   function downloadBulkTemplateCSV() {
-    const headers = ["ETAPA", "CONCEPTO", "CUENTA", "ENTIDAD", "FORMA_PAGO", "TIPO_PAGO", "MONTO", "CANTIDAD", "PLAZO"];
-    const sample = ["PREPRODUCCIÓN", "Renta cámara", "PERSONAL DE CÁMARA", "FOCINE", "EFECTIVO", "DIA", "5000", "1", "3"];
+    const headers = [
+      "ETAPA", "CONCEPTO", "CUENTA", "ENTIDAD",
+      "PAYMENT_METHOD", "FACTURADO", "MONTO", "CANTIDAD", "IVA_TIPO",
+    ];
+    const sample = [
+      "PREPRODUCCIÓN", "Renta cámara", "EQUIPO DE CÁMARA", "Proveedor XYZ",
+      "transferencia", "false", "5000", "1", "16",
+    ];
     const csv = [headers.join(","), sample.join(",")].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "plantilla_presupuesto.csv";
+    a.download = "plantilla_presupuesto_productora.csv";
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1224,29 +1246,29 @@ export async function bindPresupuestoEvents() {
   }
 
   function rowsToTSV(rows, includeHeader) {
-    const header = ["ETAPA", "CONCEPTO", "CUENTA", "ENTIDAD", "FORMA_PAGO", "TIPO_PAGO", "MONTO", "CANTIDAD", "PLAZO"];
+    const header = [
+      "ETAPA", "CONCEPTO", "CUENTA", "ENTIDAD",
+      "PAYMENT_METHOD", "FACTURADO", "MONTO", "CANTIDAD", "IVA_TIPO",
+    ];
     const lines = [];
     if (includeHeader) lines.push(header.join("\t"));
     for (const r of rows) {
-      lines.push(
-        [r.etapa, r.concepto, r.cuenta, r.entidad, r.formaPago, r.tipoPago, String(r.monto), String(r.cantidad), String(r.plazo)].join(
-          "\t"
-        )
-      );
+      lines.push([
+        r.etapa, r.concepto, r.cuenta, r.entidad,
+        r.payment_method, String(r.facturado ?? false),
+        String(r.monto), String(r.cantidad), String(r.iva_tipo ?? 16),
+      ].join("\t"));
     }
     return lines.join("\n");
   }
 
   async function parseXlsxBudgetRows(arrayBuffer) {
-    // SheetJS (XLSX) ESM CDN
     const XLSX = await import("https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm");
-
     const wb = XLSX.read(arrayBuffer, { type: "array" });
     const sheetName = wb.SheetNames.includes("layout") ? "layout" : wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
     const grid = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
 
-    // encontrar encabezado
     let headerRowIdx = -1;
     let colIdx = {};
 
@@ -1255,11 +1277,7 @@ export async function bindPresupuestoEvents() {
       const hit = row.includes("ETAPA") && row.includes("CONCEPTO") && row.includes("CUENTA");
       if (hit) {
         headerRowIdx = i;
-        const map = {};
-        row.forEach((h, j) => {
-          if (h) map[h] = j;
-        });
-        colIdx = map;
+        row.forEach((h, j) => { if (h) colIdx[h] = j; });
         break;
       }
     }
@@ -1279,32 +1297,22 @@ export async function bindPresupuestoEvents() {
       const concepto = get(row, "CONCEPTO");
       const cuenta = get(row, "CUENTA");
       const entidad = get(row, "ENTIDAD");
-      const forma = get(row, "FORMA");
-      const tipo = get(row, "TIPO PAGO") || get(row, "TIPO") || get(row, "TIPO_PAGO");
-
+      // Acepta PAYMENT_METHOD o alias legacy FORMA_PAGO / FORMA
+      const pm = get(row, "PAYMENT_METHOD") || get(row, "FORMA_PAGO") || get(row, "FORMA");
+      const facturado = get(row, "FACTURADO");
       const monto = get(row, "MONTO");
       const cantidad = get(row, "CANTIDAD");
-      const plazo = get(row, "PLAZO");
+      const iva_tipo = get(row, "IVA_TIPO") || get(row, "IVA");
 
-      const allEmpty = [etapa, concepto, cuenta, entidad, forma, tipo, monto, cantidad, plazo].every((x) => !x);
+      const allEmpty = [etapa, concepto, cuenta, pm, monto].every((x) => !x);
       if (allEmpty) continue;
 
-      out.push({
-        etapa: etapa,
-        concepto: concepto,
-        cuenta: cuenta,
-        entidad: entidad,
-        formaPago: forma,
-        tipoPago: tipo,
-        monto: monto,
-        cantidad: cantidad || "1",
-        plazo: plazo || "1",
-      });
+      out.push({ etapa, concepto, cuenta, entidad, payment_method: pm, facturado, monto, cantidad: cantidad || "1", iva_tipo: iva_tipo || "16" });
     }
 
     return mapRowsToBudgetLayout([
-      ["ETAPA", "CONCEPTO", "CUENTA", "ENTIDAD", "FORMA_PAGO", "TIPO_PAGO", "MONTO", "CANTIDAD", "PLAZO"],
-      ...out.map((o) => [o.etapa, o.concepto, o.cuenta, o.entidad, o.formaPago, o.tipoPago, o.monto, o.cantidad, o.plazo]),
+      ["ETAPA", "CONCEPTO", "CUENTA", "ENTIDAD", "PAYMENT_METHOD", "FACTURADO", "MONTO", "CANTIDAD", "IVA_TIPO"],
+      ...out.map((o) => [o.etapa, o.concepto, o.cuenta, o.entidad, o.payment_method, o.facturado, o.monto, o.cantidad, o.iva_tipo]),
     ]);
   }
 
@@ -1323,53 +1331,29 @@ export async function bindPresupuestoEvents() {
 
       if (inQuotes) {
         if (ch === '"') {
-          const next = s[i + 1];
-          if (next === '"') {
-            cur += '"';
-            i++;
-          } else {
-            inQuotes = false;
-          }
+          if (s[i + 1] === '"') { cur += '"'; i++; }
+          else inQuotes = false;
         } else {
           cur += ch;
         }
         continue;
       }
 
-      if (ch === '"') {
-        inQuotes = true;
-        continue;
-      }
-
-      if (ch === sep) {
-        row.push(cur.trim());
-        cur = "";
-        continue;
-      }
-
-      if (ch === "\n") {
-        row.push(cur.trim());
-        rows.push(row);
-        row = [];
-        cur = "";
-        continue;
-      }
-
+      if (ch === '"') { inQuotes = true; continue; }
+      if (ch === sep) { row.push(cur.trim()); cur = ""; continue; }
+      if (ch === "\n") { row.push(cur.trim()); rows.push(row); row = []; cur = ""; continue; }
       if (ch === "\r") continue;
-
       cur += ch;
     }
 
     row.push(cur.trim());
     rows.push(row);
-
     return rows.filter((r) => r.some((c) => (c ?? "").toString().trim() !== ""));
   }
 
   function detectCsvSeparator(line) {
     let inQ = false;
-    let comma = 0,
-      semi = 0;
+    let comma = 0, semi = 0;
     for (let i = 0; i < (line || "").length; i++) {
       const ch = line[i];
       if (ch === '"') inQ = !inQ;
@@ -1380,6 +1364,7 @@ export async function bindPresupuestoEvents() {
     return semi > comma ? ";" : ",";
   }
 
+  // Mapa de columnas desde CSV/TSV → objeto interno
   function mapRowsToBudgetLayout(rows) {
     if (!Array.isArray(rows) || rows.length === 0) return [];
 
@@ -1388,11 +1373,7 @@ export async function bindPresupuestoEvents() {
     const start = hasHeader ? 1 : 0;
 
     const idx = {};
-    if (hasHeader) {
-      header.forEach((h, i) => {
-        if (h) idx[h] = i;
-      });
-    }
+    if (hasHeader) header.forEach((h, i) => { if (h) idx[h] = i; });
 
     const get = (r, key, fallbackIndex) => {
       const i = idx[key];
@@ -1407,15 +1388,14 @@ export async function bindPresupuestoEvents() {
       const concepto = get(r, "CONCEPTO", 1);
       const cuenta = get(r, "CUENTA", 2);
       const entidad = get(r, "ENTIDAD", 3);
-
-      const formaPago = get(r, "FORMA_PAGO", 4) || get(r, "FORMA", 4);
-      const tipoPago = get(r, "TIPO_PAGO", 5) || get(r, "TIPO PAGO", 5) || get(r, "TIPO", 5);
-
+      // Acepta PAYMENT_METHOD (nuevo) o FORMA_PAGO / FORMA (legacy)
+      const pm = get(r, "PAYMENT_METHOD", 4) || get(r, "FORMA_PAGO", 4) || get(r, "FORMA", 4);
+      const facturado = get(r, "FACTURADO", 5);
       const monto = get(r, "MONTO", 6);
       const cantidad = get(r, "CANTIDAD", 7);
-      const plazo = get(r, "PLAZO", 8);
+      const iva_tipo = get(r, "IVA_TIPO", 8) || get(r, "IVA", 8);
 
-      const allEmpty = [etapa, concepto, cuenta, entidad, formaPago, tipoPago, monto, cantidad, plazo].every((x) => !x);
+      const allEmpty = [etapa, concepto, cuenta, pm, monto].every((x) => !x);
       if (allEmpty) continue;
 
       out.push({
@@ -1423,11 +1403,11 @@ export async function bindPresupuestoEvents() {
         concepto,
         cuenta,
         entidad,
-        formaPago,
-        tipoPago,
+        payment_method: pm,
+        facturado,
         monto,
         cantidad: cantidad || "1",
-        plazo: plazo || "1",
+        iva_tipo: iva_tipo || "16",
       });
     }
 
@@ -1440,7 +1420,7 @@ export async function bindPresupuestoEvents() {
     bulkErrors.style.display = "none";
     bulkErrors.textContent = "";
     bulkCommit.disabled = true;
-    bulkCommit.textContent = "Agregar 0 gastos";
+    bulkCommit.textContent = "Agregar 0 partidas";
     bulkBackdrop.style.display = "flex";
   }
 
@@ -1455,7 +1435,7 @@ export async function bindPresupuestoEvents() {
     bulkErrors.style.display = "none";
     bulkErrors.textContent = "";
     bulkCommit.disabled = true;
-    bulkCommit.textContent = "Agregar 0 gastos";
+    bulkCommit.textContent = "Agregar 0 partidas";
 
     if (!raw) {
       showBulkErrors(["Pega al menos 1 fila (puede incluir encabezado)."]);
@@ -1471,7 +1451,7 @@ export async function bindPresupuestoEvents() {
     bulkParsed = parsed.items;
     renderBulkPreview(bulkParsed);
     bulkCommit.disabled = bulkParsed.length === 0;
-    bulkCommit.textContent = `Agregar ${bulkParsed.length} gastos`;
+    bulkCommit.textContent = `Agregar ${bulkParsed.length} partidas`;
   }
 
   async function commitBulk() {
@@ -1479,20 +1459,17 @@ export async function bindPresupuestoEvents() {
 
     const start = Number.isFinite(seq) ? seq : 0;
 
-    const withSeq = bulkParsed.map((it, i) =>
+    const withIds = bulkParsed.map((it) =>
       normalizeItem({
         uid: mkUid(),
-        folio: start + (i + 1),
         ...it,
       })
     );
 
-    seq = start + withSeq.length;
-
-    items.push(...withSeq);
+    seq = start + withIds.length;
+    items.push(...withIds);
 
     await saveItemsAsync();
-
     renderAll();
     closeBulkModal();
   }
@@ -1510,7 +1487,7 @@ export async function bindPresupuestoEvents() {
   function renderBulkPreview(list) {
     bulkTbody.innerHTML = "";
     list.slice(0, 150).forEach((it, idx) => {
-      const n = normalizeItem({ uid: "x", folio: 0, ...it });
+      const n = normalizeItem({ uid: "x", ...it });
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td>${idx + 1}</td>
@@ -1518,11 +1495,11 @@ export async function bindPresupuestoEvents() {
         <td>${escapeHtml(n.concepto)}</td>
         <td>${escapeHtml(n.cuenta)}</td>
         <td>${escapeHtml(n.entidad)}</td>
-        <td>${escapeHtml(n.formaPago)}</td>
-        <td>${escapeHtml(n.tipoPago)}</td>
-        <td>${money(n.monto)}</td>
-        <td>${escapeHtml(n.cantidad)}</td>
-        <td>${escapeHtml(n.plazo)}</td>
+        <td>${escapeHtml(labelPaymentMethod(n.payment_method))}</td>
+        <td>${n.facturado ? "Sí" : "—"}</td>
+        <td>${money(n.monto_unitario)}</td>
+        <td>${escapeHtml(String(n.cantidad))}</td>
+        <td>${escapeHtml(labelIvaTipo(n.iva_tipo))}</td>
         <td><b>${money(n.total)}</b></td>
       `;
       bulkTbody.appendChild(tr);
@@ -1554,39 +1531,34 @@ export async function bindPresupuestoEvents() {
       const r = rows[i];
       const rowNum = i + 1;
 
-      if (r.length < 9) {
-        errors.push(`Fila ${rowNum}: faltan columnas (se esperan 9).`);
+      if (r.length < 7) {
+        errors.push(`Fila ${rowNum}: faltan columnas (se esperan al menos 7).`);
         continue;
       }
 
       const etapa = normalizeEtapa(r[0]);
       const concepto = (r[1] || "").trim();
       const cuenta = normalizeCuenta(r[2]);
-      const entidad = normalizeEntidad(r[3]);
+      const entidad = (r[3] || "").trim();
 
-      const formaRaw = normalizeFormaPago(r[4]);
-      const tipoPago = normalizeTipoPago(r[5]);
-
+      // payment_method: acepta nuevo o legacy (forma_pago viejo)
+      const pmRaw = normalizePaymentMethod(r[4]);
+      const facturado = normalizeFacturado(r[5]);
       const monto = toPositiveNumber(r[6], 0.01);
-      const cantidad = parseInt(r[7], 10);
-      const plazo = parseInt(r[8], 10);
+      const cantidad = parseInt(r[7] || "1", 10);
+      const iva_tipo = normalizeIvaTipo(r[8] || "16");
 
       if (!etapa) errors.push(`Fila ${rowNum}: ETAPA inválida "${r[0]}".`);
       if (!concepto) errors.push(`Fila ${rowNum}: CONCEPTO vacío.`);
       if (!cuenta) errors.push(`Fila ${rowNum}: CUENTA fuera de catálogo "${r[2]}".`);
-      if (!entidad) errors.push(`Fila ${rowNum}: ENTIDAD inválida "${r[3]}".`);
-      if (!tipoPago) errors.push(`Fila ${rowNum}: TIPO_PAGO inválido "${r[5]}".`);
-
-      if (entidad === "INTERNO" || entidad === "TERCEROS") {
-        if (!formaRaw) errors.push(`Fila ${rowNum}: FORMA_PAGO inválida "${r[4]}". Usa EFECTIVO o ESPECIE.`);
-      }
-
+      if (!pmRaw) errors.push(`Fila ${rowNum}: PAYMENT_METHOD inválido "${r[4]}". Usa transferencia/efectivo/especie_productora.`);
       if (!(monto > 0)) errors.push(`Fila ${rowNum}: MONTO debe ser > 0.`);
       if (!Number.isFinite(cantidad) || cantidad < 1) errors.push(`Fila ${rowNum}: CANTIDAD debe ser >= 1.`);
-      if (!Number.isFinite(plazo) || plazo < 1) errors.push(`Fila ${rowNum}: PLAZO debe ser >= 1.`);
 
-      const formaPago = applyFormaRules(entidad, formaRaw || "EFECTIVO");
-      const fixedPlazo = tipoPago === "PROYECTO" ? 1 : plazo;
+      const payment_method = pmRaw || "transferencia";
+      const isEspecie = payment_method === "especie_productora";
+      const resolvedIvaTipo = isEspecie ? "exento" : (iva_tipo ?? 16);
+      const resolvedFacturado = isEspecie ? false : (facturado ?? false);
 
       const thisRowHasError = errors.some((e) => e.startsWith(`Fila ${rowNum}:`));
       if (!thisRowHasError) {
@@ -1595,11 +1567,11 @@ export async function bindPresupuestoEvents() {
           concepto,
           cuenta,
           entidad,
-          formaPago,
-          tipoPago,
-          monto,
+          payment_method,
+          facturado: resolvedFacturado,
+          monto_unitario: monto,
           cantidad,
-          plazo: fixedPlazo,
+          iva_tipo: resolvedIvaTipo,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         });
@@ -1611,7 +1583,7 @@ export async function bindPresupuestoEvents() {
 }
 
 /* =======================
-  Helpers globales
+  Helpers globales (fuera del closure)
 ======================= */
 function round2(n) {
   return Math.round(n * 100) / 100;

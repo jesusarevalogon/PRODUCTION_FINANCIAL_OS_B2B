@@ -71,7 +71,7 @@ const ORDEN_CUENTAS = [
   "DELIVERIES",
   "RESGUARDO Y PROMOCIÓN IMCINE",
   "PÓLIZA DE SEGURO",
-  "CIERRE ADMINISTRATIVO FOCINE 2027",
+  "CIERRE ADMINISTRATIVO",
 ];
 
 /** Colores aproximados */
@@ -524,7 +524,7 @@ function renderResumenRowsEtapas(summaryEtapas) {
   return parts.join("");
 }
 
-// ✅ leer desde servidor (project_state) cuando Presupuesto ya no vive en localStorage (V2)
+// Leer desde servidor (project_state) — soporta schema v2_productora y v1 legacy
 async function readItemsFromServerState() {
   try {
     const { userId, projectId } = await getAuthCtx();
@@ -538,28 +538,40 @@ async function readItemsFromServerState() {
       const etapa = normalizeEtapa(it?.etapa);
       const concepto = (it?.concepto || "").toString().trim();
       const cuentaNombre = (it?.cuenta || it?.cuentaNombre || "").toString().trim();
-
       const account = it?.account ?? it?.accountCode ?? it?.numeroCuenta ?? it?.cuentaNumero ?? null;
+      const entidad = (it?.entidad || "").toString().trim();
 
-      const entidadRaw = (it?.entidad || "").toString().trim().toUpperCase();
-      const entidad =
-        entidadRaw === "INTERNO" ? "PROPIAS" : entidadRaw === "PROPIA" ? "PROPIAS" : entidadRaw;
+      // v2_productora: payment_method + monto_unitario + iva_monto + facturado
+      // v1 legacy: formaPago + monto + iva (auto-compat)
+      const isV2 = it?.payment_method !== undefined || it?.monto_unitario !== undefined;
 
-      const forma = (it?.formaPago || it?.forma || "").toString().trim().toUpperCase();
-      const tipo = (it?.tipoPago || it?.tipo || "").toString().trim().toUpperCase();
+      const payment_method = isV2
+        ? (it?.payment_method || "transferencia")
+        : _legacyPaymentMethod(it?.formaPago, it?.entidad);
 
-      const monto = Number.isFinite(Number(it?.monto)) ? Number(it.monto) : toNum(it?.monto);
+      const facturado = Boolean(it?.facturado ?? false);
+
+      const monto_unitario = Number.isFinite(Number(it?.monto_unitario))
+        ? Number(it.monto_unitario)
+        : (() => {
+            // v1: absorber plazo en monto
+            const m = toNum(it?.monto);
+            const p = Number.isFinite(Number(it?.plazo)) ? Number(it.plazo) : 1;
+            return Number.isFinite(m) ? Math.round(m * p * 100) / 100 : NaN;
+          })();
+
       const cantidad = Number.isFinite(Number(it?.cantidad)) ? Number(it.cantidad) : toNum(it?.cantidad);
-      const plazo = Number.isFinite(Number(it?.plazo)) ? Number(it.plazo) : toNum(it?.plazo);
       const subtotal = Number.isFinite(Number(it?.subtotal)) ? Number(it.subtotal) : toNum(it?.subtotal);
-      const iva = Number.isFinite(Number(it?.iva)) ? Number(it.iva) : toNum(it?.iva);
+      const iva_monto = Number.isFinite(Number(it?.iva_monto))
+        ? Number(it.iva_monto)
+        : Number.isFinite(Number(it?.iva)) ? Number(it.iva) : toNum(it?.iva);
       const total = Number.isFinite(Number(it?.total)) ? Number(it.total) : toNum(it?.total);
 
       if (!etapa) return { __error: `Registro #${i + 1}: Etapa inválida "${it?.etapa}".` };
       if (!concepto) return { __error: `Registro #${i + 1}: falta Concepto.` };
       if (!cuentaNombre) return { __error: `Registro #${i + 1}: falta Cuenta.` };
 
-      if (![monto, cantidad, plazo, subtotal, iva, total].every(Number.isFinite)) {
+      if (![monto_unitario, cantidad, subtotal, iva_monto, total].every(Number.isFinite)) {
         return { __error: `Registro #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
       }
 
@@ -569,13 +581,12 @@ async function readItemsFromServerState() {
         cuentaNombre,
         account,
         entidad,
-        forma,
-        tipo,
-        monto,
+        payment_method,
+        facturado,
+        monto_unitario,
         cantidad,
-        plazo,
         subtotal,
-        iva,
+        iva_monto,
         total,
       };
     });
@@ -588,67 +599,60 @@ async function readItemsFromServerState() {
   }
 }
 
-// ✅ leer desde localStorage si no hay DOM del presupuesto
+// Mapeo backward-compat: formaPago + entidad (v1) → payment_method (v2)
+function _legacyPaymentMethod(formaPago, entidad) {
+  const f = (formaPago || "").toString().trim().toUpperCase();
+  const e = (entidad || "").toString().trim().toUpperCase();
+  if (f === "ESPECIE" || e === "CENTRO") return "especie_productora";
+  if (f === "EFECTIVO") return "efectivo";
+  return "transferencia";
+}
+
+// Leer desde localStorage (fallback legacy — delegado a readItemsFromServerState cuando es posible)
 function readItemsFromLocalStorage() {
   let raw = null;
-  try {
-    raw = localStorage.getItem(LS_KEY);
-  } catch {
-    raw = null;
-  }
+  try { raw = localStorage.getItem(LS_KEY); } catch { raw = null; }
 
   const arr = raw ? JSON.parse(raw) : [];
   if (!Array.isArray(arr) || !arr.length) return [];
 
+  // Reusa la misma lógica de mapeo que readItemsFromServerState pero sin async
   const items = arr.map((it, i) => {
     const etapa = normalizeEtapa(it?.etapa);
     const concepto = (it?.concepto || "").toString().trim();
     const cuentaNombre = (it?.cuenta || it?.cuentaNombre || "").toString().trim();
-
     const account = it?.account ?? it?.accountCode ?? it?.numeroCuenta ?? it?.cuentaNumero ?? null;
+    const entidad = (it?.entidad || "").toString().trim();
+    const payment_method = it?.payment_method || _legacyPaymentMethod(it?.formaPago, it?.entidad);
+    const facturado = Boolean(it?.facturado ?? false);
 
-    const entidadRaw = (it?.entidad || "").toString().trim().toUpperCase();
-    const entidad =
-      entidadRaw === "INTERNO" ? "PROPIAS" : entidadRaw === "PROPIA" ? "PROPIAS" : entidadRaw;
+    const monto_unitario = Number.isFinite(Number(it?.monto_unitario))
+      ? Number(it.monto_unitario)
+      : (() => {
+          const m = toNum(it?.monto);
+          const p = Number.isFinite(Number(it?.plazo)) ? Number(it.plazo) : 1;
+          return Number.isFinite(m) ? Math.round(m * p * 100) / 100 : NaN;
+        })();
 
-    const forma = (it?.formaPago || it?.forma || "").toString().trim().toUpperCase();
-    const tipo = (it?.tipoPago || it?.tipo || "").toString().trim().toUpperCase();
-
-    const monto = Number.isFinite(Number(it?.monto)) ? Number(it.monto) : toNum(it?.monto);
     const cantidad = Number.isFinite(Number(it?.cantidad)) ? Number(it.cantidad) : toNum(it?.cantidad);
-    const plazo = Number.isFinite(Number(it?.plazo)) ? Number(it.plazo) : toNum(it?.plazo);
     const subtotal = Number.isFinite(Number(it?.subtotal)) ? Number(it.subtotal) : toNum(it?.subtotal);
-    const iva = Number.isFinite(Number(it?.iva)) ? Number(it.iva) : toNum(it?.iva);
+    const iva_monto = Number.isFinite(Number(it?.iva_monto))
+      ? Number(it.iva_monto)
+      : Number.isFinite(Number(it?.iva)) ? Number(it.iva) : toNum(it?.iva);
     const total = Number.isFinite(Number(it?.total)) ? Number(it.total) : toNum(it?.total);
 
     if (!etapa) return { __error: `Registro #${i + 1}: Etapa inválida "${it?.etapa}".` };
     if (!concepto) return { __error: `Registro #${i + 1}: falta Concepto.` };
     if (!cuentaNombre) return { __error: `Registro #${i + 1}: falta Cuenta.` };
-
-    if (![monto, cantidad, plazo, subtotal, iva, total].every(Number.isFinite)) {
+    if (![monto_unitario, cantidad, subtotal, iva_monto, total].every(Number.isFinite)) {
       return { __error: `Registro #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
     }
 
-    return {
-      etapa,
-      concepto,
-      cuentaNombre,
-      account,
-      entidad,
-      forma,
-      tipo,
-      monto,
-      cantidad,
-      plazo,
-      subtotal,
-      iva,
-      total,
-    };
+    return { etapa, concepto, cuentaNombre, account, entidad, payment_method, facturado, monto_unitario, cantidad, subtotal, iva_monto, total };
   });
 
   const errors = items.filter((x) => x && x.__error).map((x) => x.__error);
   if (errors.length) throw new Error(errors.join("\n"));
-
   return items;
 }
 
@@ -664,43 +668,28 @@ function readItemsFromDOM() {
       const etapa = normalizeEtapa(n.dataset.etapa);
       const concepto = (n.dataset.concepto || "").trim();
       const cuentaNombre = (n.dataset.cuenta || "").trim();
-
       const account = n.dataset.account || n.dataset.accountCode || n.dataset.numeroCuenta || null;
+      const entidad = (n.dataset.entidad || "").trim();
+      const payment_method = n.dataset.paymentMethod || _legacyPaymentMethod(n.dataset.formaDePago, n.dataset.entidad);
+      const facturado = n.dataset.facturado === "true";
 
-      const entidad = (n.dataset.entidad || "").trim().toUpperCase();
-      const forma = (n.dataset.formaDePago || "").trim().toUpperCase();
-      const tipo = (n.dataset.tipoDePago || "").trim().toUpperCase();
-
-      const monto = toNum(n.dataset.monto);
+      const monto_unitario = Number.isFinite(toNum(n.dataset.montoUnitario))
+        ? toNum(n.dataset.montoUnitario)
+        : (() => { const m = toNum(n.dataset.monto); const p = toNum(n.dataset.plazo) || 1; return m * p; })();
       const cantidad = toNum(n.dataset.cantidad);
-      const plazo = toNum(n.dataset.plazo);
       const subtotal = toNum(n.dataset.subtotal);
-      const iva = toNum(n.dataset.iva);
+      const iva_monto = Number.isFinite(toNum(n.dataset.ivaMonto)) ? toNum(n.dataset.ivaMonto) : toNum(n.dataset.iva);
       const total = toNum(n.dataset.total);
 
       if (!etapa) return { __error: `Registro #${i + 1}: Etapa inválida "${n.dataset.etapa}".` };
       if (!concepto) return { __error: `Registro #${i + 1}: falta Concepto.` };
       if (!cuentaNombre) return { __error: `Registro #${i + 1}: falta Cuenta.` };
 
-      if (![monto, cantidad, plazo, subtotal, iva, total].every(Number.isFinite)) {
+      if (![monto_unitario, cantidad, subtotal, iva_monto, total].every(Number.isFinite)) {
         return { __error: `Registro #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
       }
 
-      return {
-        etapa,
-        concepto,
-        cuentaNombre,
-        account,
-        entidad,
-        forma,
-        tipo,
-        monto,
-        cantidad,
-        plazo,
-        subtotal,
-        iva,
-        total,
-      };
+      return { etapa, concepto, cuentaNombre, account, entidad, payment_method, facturado, monto_unitario, cantidad, subtotal, iva_monto, total };
     });
 
     const errorsA = itemsA.filter((x) => x && x.__error).map((x) => x.__error);
@@ -728,11 +717,10 @@ function readItemsFromDOM() {
     "CONCEPTO",
     "CUENTA",
     "ENTIDAD",
-    "FORMA DE PAGO",
-    "TIPO DE PAGO",
+    "METODO DE PAGO",
+    "FACTURA",
     "MONTO",
     "CANTIDAD",
-    "PLAZO",
     "SUBTOTAL",
     "IVA",
     "TOTAL",
@@ -780,11 +768,10 @@ function readItemsFromDOM() {
   const idxConcepto = idxOf("CONCEPTO");
   const idxCuenta = idxOf("CUENTA");
   const idxEntidad = idxOf("ENTIDAD");
-  const idxForma = idxOf("FORMA DE PAGO");
-  const idxTipo = idxOf("TIPO DE PAGO");
+  const idxPaymentMethod = idxOf("METODO DE PAGO");
+  const idxFacturado = idxOf("FACTURA");
   const idxMonto = idxOf("MONTO");
   const idxCantidad = idxOf("CANTIDAD");
-  const idxPlazo = idxOf("PLAZO");
   const idxSubtotal = idxOf("SUBTOTAL");
   const idxIva = idxOf("IVA");
   const idxTotal = idxOf("TOTAL");
@@ -794,11 +781,10 @@ function readItemsFromDOM() {
     ["CONCEPTO", idxConcepto],
     ["CUENTA", idxCuenta],
     ["ENTIDAD", idxEntidad],
-    ["FORMA DE PAGO", idxForma],
-    ["TIPO DE PAGO", idxTipo],
+    ["METODO DE PAGO", idxPaymentMethod],
+    ["FACTURA", idxFacturado],
     ["MONTO", idxMonto],
     ["CANTIDAD", idxCantidad],
-    ["PLAZO", idxPlazo],
     ["SUBTOTAL", idxSubtotal],
     ["IVA", idxIva],
     ["TOTAL", idxTotal],
@@ -827,23 +813,29 @@ function readItemsFromDOM() {
     const etapa = normalizeEtapa(get(idxEtapa));
     const concepto = get(idxConcepto);
     const cuentaNombre = get(idxCuenta);
+    const entidad = get(idxEntidad);
 
-    const entidad = get(idxEntidad).toUpperCase();
-    const forma = get(idxForma).toUpperCase();
-    const tipo = get(idxTipo).toUpperCase();
+    // Map display label back to code
+    const pmDisplay = norm(get(idxPaymentMethod));
+    const payment_method =
+      pmDisplay === "TRANSFERENCIA" ? "transferencia" :
+      pmDisplay === "EFECTIVO" ? "efectivo" :
+      pmDisplay === "ESPECIE" ? "especie_productora" :
+      "transferencia";
 
-    const monto = toNum(get(idxMonto));
+    const facturado = norm(get(idxFacturado)) === "SI";
+
+    const monto_unitario = toNum(get(idxMonto));
     const cantidad = toNum(get(idxCantidad));
-    const plazo = toNum(get(idxPlazo));
     const subtotal = toNum(get(idxSubtotal));
-    const iva = toNum(get(idxIva));
+    const iva_monto = toNum(get(idxIva));
     const total = toNum(get(idxTotal));
 
     if (!etapa) return { __error: `Fila #${i + 1}: Etapa inválida "${get(idxEtapa)}".` };
     if (!concepto) return { __error: `Fila #${i + 1}: falta Concepto.` };
     if (!cuentaNombre) return { __error: `Fila #${i + 1}: falta Cuenta.` };
 
-    if (![monto, cantidad, plazo, subtotal, iva, total].every(Number.isFinite)) {
+    if (![monto_unitario, cantidad, subtotal, iva_monto, total].every(Number.isFinite)) {
       return { __error: `Fila #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
     }
 
@@ -853,13 +845,12 @@ function readItemsFromDOM() {
       cuentaNombre,
       account: null,
       entidad,
-      forma,
-      tipo,
-      monto,
+      payment_method,
+      facturado,
+      monto_unitario,
       cantidad,
-      plazo,
       subtotal,
-      iva,
+      iva_monto,
       total,
     };
   });
@@ -939,41 +930,17 @@ function enrich(items) {
 }
 
 /** =========================
- *  4) Aportaciones por Entidad/Forma
+ *  4) Aportaciones por Método de pago (v2_productora)
+ *  EFECTIVO = transferencia | efectivo
+ *  ESPECIE  = especie_productora
  *  ========================= */
 function aportacionesFrom(row) {
-  const e = (row.entidad || "").toUpperCase();
-  const f = (row.forma || "").toUpperCase();
+  const pm = (row.payment_method || "").toLowerCase();
   const val = row.total;
-
-  const out = {
-    focine_efectivo: 0,
-    centro_especie: 0,
-    propias_efectivo: 0,
-    propias_especie: 0,
-    terceros_efectivo: 0,
-    terceros_especie: 0,
+  return {
+    efectivo: pm !== "especie_productora" ? val : 0,
+    especie: pm === "especie_productora" ? val : 0,
   };
-
-  if (e === "FOCINE") {
-    out.focine_efectivo = val;
-    return out;
-  }
-  if (e === "CENTRO") {
-    out.centro_especie = val;
-    return out;
-  }
-  if (e === "PROPIAS") {
-    if (f === "ESPECIE") out.propias_especie = val;
-    else out.propias_efectivo = val;
-    return out;
-  }
-  if (e === "TERCEROS") {
-    if (f === "ESPECIE") out.terceros_especie = val;
-    else out.terceros_efectivo = val;
-    return out;
-  }
-  return out;
 }
 
 /** =========================
@@ -983,14 +950,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   const showActions = opts.showActions !== false;
   const splitPages = opts.splitPages === true;
   const printResumenOnly = opts.printResumenOnly === true;
-const printDesgloseOnly = opts.printDesgloseOnly === true;
-
-  function labelTipoPago(raw) {
-    const t = norm(raw);
-    if (t === "DIA" || t === "DÍA") return "Por día";
-    if (t === "PROYECTO") return "Por proyecto";
-    return raw ? escapeHtml(raw) : "";
-  }
+  const printDesgloseOnly = opts.printDesgloseOnly === true;
 
   const summaryEtapas = buildBudgetSummaryEtapasFromRows(rows, {
     titulo: projectName || "Proyecto",
@@ -1002,42 +962,23 @@ const printDesgloseOnly = opts.printDesgloseOnly === true;
 
   const grand = {
     subtotal: 0,
-    iva: 0,
+    iva_monto: 0,
     total: 0,
-    focine_efectivo: 0,
-    centro_especie: 0,
-    propias_efectivo: 0,
-    propias_especie: 0,
-    terceros_efectivo: 0,
-    terceros_especie: 0,
+    efectivo: 0,
+    especie: 0,
   };
 
   function emptyTotals() {
-    return {
-      subtotal: 0,
-      iva: 0,
-      total: 0,
-      focine_efectivo: 0,
-      centro_especie: 0,
-      propias_efectivo: 0,
-      propias_especie: 0,
-      terceros_efectivo: 0,
-      terceros_especie: 0,
-    };
+    return { subtotal: 0, iva_monto: 0, total: 0, efectivo: 0, especie: 0 };
   }
 
   function addTotals(target, r) {
     const ap = aportacionesFrom(r);
     target.subtotal += r.subtotal;
-    target.iva += r.iva;
+    target.iva_monto += r.iva_monto;
     target.total += r.total;
-
-    target.focine_efectivo += ap.focine_efectivo;
-    target.centro_especie += ap.centro_especie;
-    target.propias_efectivo += ap.propias_efectivo;
-    target.propias_especie += ap.propias_especie;
-    target.terceros_efectivo += ap.terceros_efectivo;
-    target.terceros_especie += ap.terceros_especie;
+    target.efectivo += ap.efectivo;
+    target.especie += ap.especie;
   }
 
   for (const r of rows) {
@@ -1056,7 +997,7 @@ const printDesgloseOnly = opts.printDesgloseOnly === true;
   const renderEtapaBanner = (etapa) => {
     const c = COLORS.etapa[etapa];
     return `<tr class="etapa-banner" style="background:${c.bg}; color:${c.fg};">
-      <td colspan="15">${labelEtapa(etapa)}</td>
+      <td colspan="10">${labelEtapa(etapa)}</td>
     </tr>`;
   };
 
@@ -1065,7 +1006,7 @@ const printDesgloseOnly = opts.printDesgloseOnly === true;
     const c = COLORS.cuenta[key];
     return `<tr class="cuenta-group" style="background:${c.bg}; color:${c.fg};">
       <td class="code">${numeroCuenta}</td>
-      <td class="desc" colspan="14">${escapeHtml(cuentaNombre)}</td>
+      <td class="desc" colspan="9">${escapeHtml(cuentaNombre)}</td>
     </tr>`;
   };
 
@@ -1076,17 +1017,12 @@ const printDesgloseOnly = opts.printDesgloseOnly === true;
       <td class="desc">SUBTOTALES SUBCUENTA ${numeroCuenta}</td>
       <td class="tipo"></td>
       <td class="num">${acc.cantidad}</td>
-      <td class="num">${money(acc.monto)}</td>
-      <td class="num">${acc.plazo}</td>
+      <td class="num">${money(acc.monto_unitario)}</td>
       <td class="num">${money(acc.subtotal)}</td>
-      <td class="num">${money(acc.iva)}</td>
+      <td class="num">${money(acc.iva_monto)}</td>
       <td class="num total-highlight">${money(acc.total)}</td>
-      <td class="num">${acc.focine_efectivo ? money(acc.focine_efectivo) : ""}</td>
-      <td class="num">${acc.centro_especie ? money(acc.centro_especie) : ""}</td>
-      <td class="num">${acc.propias_efectivo ? money(acc.propias_efectivo) : ""}</td>
-      <td class="num">${acc.propias_especie ? money(acc.propias_especie) : ""}</td>
-      <td class="num">${acc.terceros_efectivo ? money(acc.terceros_efectivo) : ""}</td>
-      <td class="num">${acc.terceros_especie ? money(acc.terceros_especie) : ""}</td>
+      <td class="num">${acc.efectivo ? money(acc.efectivo) : ""}</td>
+      <td class="num">${acc.especie ? money(acc.especie) : ""}</td>
     </tr>`;
   };
 
@@ -1094,32 +1030,24 @@ const printDesgloseOnly = opts.printDesgloseOnly === true;
     const t = etapaTotals.get(etapa);
     return `<tr class="grand">
       <td class="code"></td>
-      <td class="desc" colspan="5">GRAN TOTAL ${labelEtapa(etapa)}</td>
+      <td class="desc" colspan="3">GRAN TOTAL ${labelEtapa(etapa)}</td>
       <td class="num">${money(t.subtotal)}</td>
-      <td class="num">${money(t.iva)}</td>
+      <td class="num">${money(t.iva_monto)}</td>
       <td class="num total-highlight">${money(t.total)}</td>
-      <td class="num">${t.focine_efectivo ? money(t.focine_efectivo) : ""}</td>
-      <td class="num">${t.centro_especie ? money(t.centro_especie) : ""}</td>
-      <td class="num">${t.propias_efectivo ? money(t.propias_efectivo) : ""}</td>
-      <td class="num">${t.propias_especie ? money(t.propias_especie) : ""}</td>
-      <td class="num">${t.terceros_efectivo ? money(t.terceros_efectivo) : ""}</td>
-      <td class="num">${t.terceros_especie ? money(t.terceros_especie) : ""}</td>
+      <td class="num">${t.efectivo ? money(t.efectivo) : ""}</td>
+      <td class="num">${t.especie ? money(t.especie) : ""}</td>
     </tr>`;
   };
 
   const renderGrandTotal = () => {
     return `<tr class="grand grand-final">
       <td class="code"></td>
-      <td class="desc" colspan="5">GRAN TOTAL</td>
+      <td class="desc" colspan="3">GRAN TOTAL</td>
       <td class="num">${money(grand.subtotal)}</td>
-      <td class="num">${money(grand.iva)}</td>
+      <td class="num">${money(grand.iva_monto)}</td>
       <td class="num total-highlight">${money(grand.total)}</td>
-      <td class="num">${grand.focine_efectivo ? money(grand.focine_efectivo) : ""}</td>
-      <td class="num">${grand.centro_especie ? money(grand.centro_especie) : ""}</td>
-      <td class="num">${grand.propias_efectivo ? money(grand.propias_efectivo) : ""}</td>
-      <td class="num">${grand.propias_especie ? money(grand.propias_especie) : ""}</td>
-      <td class="num">${grand.terceros_efectivo ? money(grand.terceros_efectivo) : ""}</td>
-      <td class="num">${grand.terceros_especie ? money(grand.terceros_especie) : ""}</td>
+      <td class="num">${grand.efectivo ? money(grand.efectivo) : ""}</td>
+      <td class="num">${grand.especie ? money(grand.especie) : ""}</td>
     </tr>`;
   };
 
@@ -1134,57 +1062,37 @@ const printDesgloseOnly = opts.printDesgloseOnly === true;
 
       const acc = {
         cantidad: 0,
-        monto: 0,
-        plazo: 0,
+        monto_unitario: 0,
         subtotal: 0,
-        iva: 0,
+        iva_monto: 0,
         total: 0,
-        focine_efectivo: 0,
-        centro_especie: 0,
-        propias_efectivo: 0,
-        propias_especie: 0,
-        terceros_efectivo: 0,
-        terceros_especie: 0,
+        efectivo: 0,
+        especie: 0,
       };
 
       for (const r of bucket.rows) {
         const ap = aportacionesFrom(r);
 
         acc.cantidad += r.cantidad;
-        acc.monto += r.monto;
-        acc.plazo += r.plazo;
-
+        acc.monto_unitario += r.monto_unitario;
         acc.subtotal += r.subtotal;
-        acc.iva += r.iva;
+        acc.iva_monto += r.iva_monto;
         acc.total += r.total;
-
-        acc.focine_efectivo += ap.focine_efectivo;
-        acc.centro_especie += ap.centro_especie;
-        acc.propias_efectivo += ap.propias_efectivo;
-        acc.propias_especie += ap.propias_especie;
-        acc.terceros_efectivo += ap.terceros_efectivo;
-        acc.terceros_especie += ap.terceros_especie;
+        acc.efectivo += ap.efectivo;
+        acc.especie += ap.especie;
 
         bodyRows += `
           <tr class="item">
             <td class="code">${r.subcuenta}</td>
             <td class="desc">${escapeHtml(r.concepto)}</td>
-            <td class="tipo">${labelTipoPago(r.tipo)}</td>
-
+            <td class="tipo">${r.facturado ? "Con factura" : "Sin factura"}</td>
             <td class="num">${r.cantidad}</td>
-            <td class="num">${money(r.monto)}</td>
-            <td class="num">${r.plazo}</td>
-
+            <td class="num">${money(r.monto_unitario)}</td>
             <td class="num">${money(r.subtotal)}</td>
-            <td class="num">${money(r.iva)}</td>
+            <td class="num">${money(r.iva_monto)}</td>
             <td class="num">${money(r.total)}</td>
-
-            <td class="num">${ap.focine_efectivo ? money(ap.focine_efectivo) : ""}</td>
-            <td class="num">${ap.centro_especie ? money(ap.centro_especie) : ""}</td>
-            <td class="num">${ap.propias_efectivo ? money(ap.propias_efectivo) : ""}</td>
-            <td class="num">${ap.propias_especie ? money(ap.propias_especie) : ""}</td>
-            <td class="num">${ap.terceros_efectivo ? money(ap.terceros_efectivo) : ""}</td>
-            <td class="num">${ap.terceros_especie ? money(ap.terceros_especie) : ""}</td>
+            <td class="num">${ap.efectivo ? money(ap.efectivo) : ""}</td>
+            <td class="num">${ap.especie ? money(ap.especie) : ""}</td>
           </tr>
         `;
       }
@@ -1291,24 +1199,15 @@ const printDesgloseOnly = opts.printDesgloseOnly === true;
       <tr>
         <th rowspan="2">CUENTA Y SUBCUENTA</th>
         <th rowspan="2">DESCRIPCIÓN</th>
-        <th rowspan="2">TIPO DE PAGO</th>
+        <th rowspan="2">FACTURA</th>
         <th rowspan="2">CANT.</th>
         <th rowspan="2">COSTO UNIDAD</th>
-        <th rowspan="2">PLAZO</th>
         <th rowspan="2">SUBTOTAL</th>
         <th rowspan="2">IVA</th>
         <th rowspan="2">TOTAL</th>
-
-        <th colspan="1" style="background:#FFFF00;">APORTACIÓN FOCINE</th>
-        <th colspan="1">APORTACIÓN CENTRO</th>
-        <th colspan="2">APORTACIONES PROPIAS (DIRECCIÓN)</th>
-        <th colspan="2">APORTACIONES DE TERCEROS</th>
+        <th colspan="2">APORTACIÓN</th>
       </tr>
       <tr>
-        <th style="background:#FFFF00;">EFECTIVO</th>
-        <th>ESPECIE</th>
-        <th>EFECTIVO</th>
-        <th>ESPECIE</th>
         <th>EFECTIVO</th>
         <th>ESPECIE</th>
       </tr>
