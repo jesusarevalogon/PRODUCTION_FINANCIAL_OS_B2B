@@ -6,7 +6,7 @@
   ✅ Métodos de pago: transferencia | efectivo | especie_productora
   ✅ Factura por partida (booleano operativo)
   ✅ IVA por partida: 16 | 8 | 0 | exento
-  ✅ Cálculo: subtotal = monto_unitario × cantidad
+  ✅ Cálculo: subtotal = monto_unitario × cantidad × plazo_cantidad
   ✅ Resumen: EFECTIVO (transferencia+efectivo) vs ESPECIE (productora)
   ✅ Migración lazy desde datos v1 (FOCINE/CENTRO/formaPago/plazo)
   ✅ CSV import: normaliza valores legacy y acepta nuevos
@@ -103,7 +103,8 @@ export function renderPresupuestoView() {
     (pm) => `<option value="${pm}">${escapeHtml(labelPaymentMethod(pm))}</option>`
   ).join("");
 
-  const ivaTipoOptions = IVA_TIPOS.map(
+  // "exento" es valor interno (especie); no se expone en la UI
+  const ivaTipoOptions = [16, 8, 0].map(
     (t) => `<option value="${t}">${escapeHtml(labelIvaTipo(t))}</option>`
   ).join("");
 
@@ -189,6 +190,7 @@ export function renderPresupuestoView() {
               <th>Factura</th>
               <th>Monto</th>
               <th>Cantidad</th>
+              <th>Plazo</th>
               <th>Subtotal</th>
               <th>IVA</th>
               <th>Total</th>
@@ -782,14 +784,18 @@ export async function bindPresupuestoEvents() {
     let cantidad = parseInt(it.cantidad ?? 1, 10);
     if (!Number.isFinite(cantidad) || cantidad < 1) cantidad = 1;
 
+    const plazo_tipo = it.plazo_tipo === "dias" ? "dias" : "proyecto";
+    // backward compat: old field was plazo_dias
+    let plazo_cantidad = plazo_tipo === "dias"
+      ? parseInt(it.plazo_cantidad ?? it.plazo_dias ?? 1, 10)
+      : 1;
+    if (!Number.isFinite(plazo_cantidad) || plazo_cantidad < 1) plazo_cantidad = 1;
+
     const monto_unitario = toPositiveNumber(it.monto_unitario, 0.01);
-    const subtotal = round2(monto_unitario * cantidad);
+    // plazo_tipo="dias" multiplica por plazo_cantidad; "proyecto" × 1 (sin cambio)
+    const subtotal = round2(monto_unitario * cantidad * plazo_cantidad);
     const iva_monto = (iva_tipo === "exento" || iva_tipo === 0) ? 0 : round2(subtotal * (iva_tipo / 100));
     const total = round2(subtotal + iva_monto);
-
-    const plazo_tipo = it.plazo_tipo === "dias" ? "dias" : "proyecto";
-    let plazo_dias = plazo_tipo === "dias" ? parseInt(it.plazo_dias ?? 1, 10) : 1;
-    if (!Number.isFinite(plazo_dias) || plazo_dias < 1) plazo_dias = 1;
 
     return {
       uid: it.uid || mkUid(),
@@ -806,7 +812,7 @@ export async function bindPresupuestoEvents() {
       iva_monto,
       total,
       plazo_tipo,
-      plazo_dias,
+      plazo_cantidad,
       createdAt: it.createdAt ?? Date.now(),
       updatedAt: it.updatedAt ?? Date.now(),
     };
@@ -954,6 +960,7 @@ export async function bindPresupuestoEvents() {
         <td>${it.facturado ? "Sí" : "—"}</td>
         <td>${money(it.monto_unitario)}</td>
         <td>${escapeHtml(String(it.cantidad))}</td>
+        <td>${it.plazo_tipo === "dias" ? `${it.plazo_cantidad}d` : "—"}</td>
         <td>${money(it.subtotal)}</td>
         <td>${money(it.iva_monto)}</td>
         <td><b>${money(it.total)}</b></td>
@@ -1114,7 +1121,7 @@ export async function bindPresupuestoEvents() {
       inpMonto.value = String(it.monto_unitario ?? "");
       inpCantidad.value = String(it.cantidad ?? 1);
       selPlazoTipo.value = it.plazo_tipo === "dias" ? "dias" : "proyecto";
-      inpPlazoDias.value = String(it.plazo_dias ?? 1);
+      inpPlazoDias.value = String(it.plazo_cantidad ?? it.plazo_dias ?? 1);
       applyPlazoRules();
       applyPaymentMethodRulesToModal();
     }
@@ -1170,7 +1177,7 @@ export async function bindPresupuestoEvents() {
     let cantidad = parseInt(inpCantidad.value || "1", 10);
     if (!Number.isFinite(cantidad) || cantidad < 1) cantidad = 1;
     const plazo_tipo = selPlazoTipo.value === "dias" ? "dias" : "proyecto";
-    const plazo_dias = plazo_tipo === "dias"
+    const plazo_cantidad = plazo_tipo === "dias"
       ? Math.max(1, parseInt(inpPlazoDias.value || "1", 10) || 1)
       : 1;
 
@@ -1187,7 +1194,7 @@ export async function bindPresupuestoEvents() {
         cantidad,
         iva_tipo,
         plazo_tipo,
-        plazo_dias,
+        plazo_cantidad,
       });
 
       items.push(item);
@@ -1219,7 +1226,7 @@ export async function bindPresupuestoEvents() {
       cantidad,
       iva_tipo,
       plazo_tipo,
-      plazo_dias,
+      plazo_cantidad,
       updatedAt: Date.now(),
     });
 
@@ -1279,7 +1286,7 @@ export async function bindPresupuestoEvents() {
       "monto_unitario",
       "cantidad",
       "plazo_tipo",
-      "plazo_dias",
+      "plazo_cantidad",
       "iva_tipo",
       "subtotal",
       "iva_monto",
