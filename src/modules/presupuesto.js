@@ -23,12 +23,9 @@ import { loadModuleState, saveModuleState } from "../services/stateService.js";
   la vista previa de Presupuesto.
 ========================================================= */
 if (typeof window !== "undefined") {
-  window.openPresupuestoPreview = function () {
-    try {
-      exportarPresupuestoPDF();
-    } catch (e) {
-      alert(e?.message || String(e));
-    }
+  // Llamada desde Documentación u otros módulos: por default muestra Ambos (resumen + desglose)
+  window.openPresupuestoPreview = function (choice = "3") {
+    exportarPresupuestoPDF({ choice }).catch((e) => alert(e?.message || String(e)));
   };
 }
 
@@ -256,6 +253,19 @@ export function renderPresupuestoView() {
               <span>Cantidad</span>
               <input id="bgCantidad" type="number" min="1" step="1" placeholder="1" />
             </label>
+
+            <label>
+              <span>Tipo de plazo</span>
+              <select id="bgPlazoTipo">
+                <option value="proyecto">Por proyecto</option>
+                <option value="dias">Por días</option>
+              </select>
+            </label>
+
+            <label id="bgPlazoDiasWrap" style="display:none;">
+              <span>Días</span>
+              <input id="bgPlazoDias" type="number" min="1" step="1" placeholder="Ej. 5" />
+            </label>
           </div>
 
           <p class="muted" id="bgValidationMsg" style="display:none; margin-top:10px;"></p>
@@ -264,6 +274,37 @@ export function renderPresupuestoView() {
         <div class="modal-footer">
           <button id="bgModalCancel" class="btn btn-light">Cancelar</button>
           <button id="bgModalSave" class="btn btn-primary">Guardar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal Vista Previa PDF -->
+    <div id="bgPdfModalBackdrop" class="modal-backdrop" style="display:none;">
+      <div class="modal" style="max-width:380px;">
+        <div class="modal-header">
+          <h3>Vista previa del Presupuesto</h3>
+          <button id="bgPdfModalClose" class="modal-close" aria-label="Cerrar">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="muted" style="margin:0 0 14px;">Selecciona qué sección deseas abrir:</p>
+          <div style="display:flex; flex-direction:column; gap:12px;">
+            <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+              <input type="radio" name="bgPdfChoice" value="3" checked />
+              <span>Ambos — Resumen + Desglose</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+              <input type="radio" name="bgPdfChoice" value="1" />
+              <span>Solo Resumen (1 hoja portrait)</span>
+            </label>
+            <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+              <input type="radio" name="bgPdfChoice" value="2" />
+              <span>Solo Desglose (landscape)</span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="bgPdfModalCancel" class="btn btn-light">Cancelar</button>
+          <button id="bgPdfModalConfirm" class="btn btn-primary">Abrir vista previa</button>
         </div>
       </div>
     </div>
@@ -382,6 +423,15 @@ export async function bindPresupuestoEvents() {
   const selIvaTipo = document.getElementById("bgIvaTipo");
   const inpMonto = document.getElementById("bgMonto");
   const inpCantidad = document.getElementById("bgCantidad");
+  const selPlazoTipo = document.getElementById("bgPlazoTipo");
+  const inpPlazoDias = document.getElementById("bgPlazoDias");
+  const plazoDiasWrap = document.getElementById("bgPlazoDiasWrap");
+
+  // Modal PDF
+  const pdfModalBackdrop = document.getElementById("bgPdfModalBackdrop");
+  const pdfModalClose = document.getElementById("bgPdfModalClose");
+  const pdfModalCancel = document.getElementById("bgPdfModalCancel");
+  const pdfModalConfirm = document.getElementById("bgPdfModalConfirm");
 
   // Modal carga masiva
   const bulkBackdrop = document.getElementById("bgBulkBackdrop");
@@ -489,14 +539,23 @@ export async function bindPresupuestoEvents() {
   btnDescargar.addEventListener("click", downloadCSV);
 
   btnExportarPDF.addEventListener("click", () => {
+    // Resetear radio a "Ambos" y abrir modal de elección
+    const radioDefault = pdfModalBackdrop.querySelector("input[name=bgPdfChoice][value='3']");
+    if (radioDefault) radioDefault.checked = true;
+    pdfModalBackdrop.style.display = "flex";
+  });
+  pdfModalClose.addEventListener("click", () => { pdfModalBackdrop.style.display = "none"; });
+  pdfModalCancel.addEventListener("click", () => { pdfModalBackdrop.style.display = "none"; });
+  pdfModalBackdrop.addEventListener("click", (e) => {
+    if (e.target === pdfModalBackdrop) pdfModalBackdrop.style.display = "none";
+  });
+  pdfModalConfirm.addEventListener("click", async () => {
+    const choice = pdfModalBackdrop.querySelector("input[name=bgPdfChoice]:checked")?.value || "3";
+    pdfModalBackdrop.style.display = "none";
     try {
-      window.openPresupuestoPreview();
+      await exportarPresupuestoPDF({ choice });
     } catch (e) {
-      try {
-        exportarPresupuestoPDF();
-      } catch (err) {
-        alert(err?.message || String(err));
-      }
+      alert(e?.message || String(e));
     }
   });
 
@@ -519,9 +578,12 @@ export async function bindPresupuestoEvents() {
   modalSave.addEventListener("click", saveModal);
 
   selPaymentMethod.addEventListener("change", applyPaymentMethodRulesToModal);
+  chkFacturado.addEventListener("change", applyFacturadoRule);
+  selPlazoTipo.addEventListener("change", applyPlazoRules);
 
   inpMonto.addEventListener("blur", () => clampInput(inpMonto, 0.01, false));
   inpCantidad.addEventListener("blur", () => clampInput(inpCantidad, 1, true));
+  inpPlazoDias.addEventListener("blur", () => clampInput(inpPlazoDias, 1, true));
 
   inpSearch?.addEventListener("input", () => {
     uiSearch = (inpSearch.value || "").trim();
@@ -703,20 +765,31 @@ export async function bindPresupuestoEvents() {
     const pm = normalizePaymentMethod(it.payment_method) || "transferencia";
     const isEspecie = pm === "especie_productora";
 
-    // IVA: especie siempre exento
-    let iva_tipo = isEspecie ? "exento" : (it.iva_tipo ?? 16);
-    if (!IVA_TIPOS.includes(iva_tipo)) iva_tipo = isEspecie ? "exento" : 16;
-
     // Facturado: especie siempre false
     const facturado = isEspecie ? false : Boolean(it.facturado ?? false);
+
+    // IVA: especie → exento | sin factura → 0 | con factura → valor guardado
+    let iva_tipo;
+    if (isEspecie) {
+      iva_tipo = "exento";
+    } else if (!facturado) {
+      iva_tipo = 0;
+    } else {
+      iva_tipo = it.iva_tipo ?? 16;
+      if (!IVA_TIPOS.includes(iva_tipo)) iva_tipo = 16;
+    }
 
     let cantidad = parseInt(it.cantidad ?? 1, 10);
     if (!Number.isFinite(cantidad) || cantidad < 1) cantidad = 1;
 
     const monto_unitario = toPositiveNumber(it.monto_unitario, 0.01);
     const subtotal = round2(monto_unitario * cantidad);
-    const iva_monto = iva_tipo === "exento" ? 0 : round2(subtotal * (iva_tipo / 100));
+    const iva_monto = (iva_tipo === "exento" || iva_tipo === 0) ? 0 : round2(subtotal * (iva_tipo / 100));
     const total = round2(subtotal + iva_monto);
+
+    const plazo_tipo = it.plazo_tipo === "dias" ? "dias" : "proyecto";
+    let plazo_dias = plazo_tipo === "dias" ? parseInt(it.plazo_dias ?? 1, 10) : 1;
+    if (!Number.isFinite(plazo_dias) || plazo_dias < 1) plazo_dias = 1;
 
     return {
       uid: it.uid || mkUid(),
@@ -732,6 +805,8 @@ export async function bindPresupuestoEvents() {
       subtotal,
       iva_monto,
       total,
+      plazo_tipo,
+      plazo_dias,
       createdAt: it.createdAt ?? Date.now(),
       updatedAt: it.updatedAt ?? Date.now(),
     };
@@ -957,19 +1032,36 @@ export async function bindPresupuestoEvents() {
 
   // ── Modal ──
 
+  function applyPlazoRules() {
+    const isByDays = selPlazoTipo.value === "dias";
+    plazoDiasWrap.style.display = isByDays ? "" : "none";
+    if (!isByDays) inpPlazoDias.value = "1";
+  }
+
+  function applyFacturadoRule() {
+    const pm = selPaymentMethod.value;
+    if (pm === "especie_productora") return; // especie maneja su propio bloqueo
+    if (!chkFacturado.checked) {
+      selIvaTipo.value = "0";
+      selIvaTipo.disabled = true;
+    } else {
+      selIvaTipo.disabled = false;
+      if (selIvaTipo.value === "0" || selIvaTipo.value === "exento") selIvaTipo.value = "16";
+    }
+  }
+
   function applyPaymentMethodRulesToModal() {
     const pm = selPaymentMethod.value;
     const isEspecie = pm === "especie_productora";
     if (isEspecie) {
       chkFacturado.checked = false;
       chkFacturado.disabled = true;
-      selIvaTipo.value = "exento";
+      selIvaTipo.value = "0";
       selIvaTipo.disabled = true;
     } else {
       chkFacturado.disabled = false;
-      selIvaTipo.disabled = false;
-      // Al volver de especie, resetear IVA a 16 si estaba en exento
-      if (selIvaTipo.value === "exento") selIvaTipo.value = "16";
+      // Delegar bloqueo de IVA al estado de facturado
+      applyFacturadoRule();
     }
   }
 
@@ -997,10 +1089,13 @@ export async function bindPresupuestoEvents() {
       selPaymentMethod.value = "transferencia";
       chkFacturado.checked = false;
       chkFacturado.disabled = false;
-      selIvaTipo.value = "16";
-      selIvaTipo.disabled = false;
+      selIvaTipo.value = "0";
+      selIvaTipo.disabled = true;
       inpMonto.value = "";
       inpCantidad.value = "1";
+      selPlazoTipo.value = "proyecto";
+      inpPlazoDias.value = "1";
+      applyPlazoRules();
       applyPaymentMethodRulesToModal();
     } else {
       if (selectedUids.size !== 1) return;
@@ -1015,9 +1110,12 @@ export async function bindPresupuestoEvents() {
       inpEntidad.value = it.entidad || "";
       selPaymentMethod.value = it.payment_method || "transferencia";
       chkFacturado.checked = Boolean(it.facturado);
-      selIvaTipo.value = String(it.iva_tipo ?? 16);
+      selIvaTipo.value = String(it.iva_tipo ?? 0);
       inpMonto.value = String(it.monto_unitario ?? "");
       inpCantidad.value = String(it.cantidad ?? 1);
+      selPlazoTipo.value = it.plazo_tipo === "dias" ? "dias" : "proyecto";
+      inpPlazoDias.value = String(it.plazo_dias ?? 1);
+      applyPlazoRules();
       applyPaymentMethodRulesToModal();
     }
 
@@ -1041,6 +1139,11 @@ export async function bindPresupuestoEvents() {
     const cuenta = (selCuenta.value || "").trim();
     if (!cuenta) return "Falta: Cuenta.";
 
+    if (selPlazoTipo.value === "dias") {
+      const dias = parseInt(inpPlazoDias.value || "1", 10);
+      if (!Number.isFinite(dias) || dias < 1) return "Días debe ser 1 o mayor.";
+    }
+
     return null;
   }
 
@@ -1061,10 +1164,15 @@ export async function bindPresupuestoEvents() {
     const payment_method = selPaymentMethod.value || "transferencia";
     const isEspecie = payment_method === "especie_productora";
     const facturado = isEspecie ? false : chkFacturado.checked;
-    const iva_tipo = isEspecie ? "exento" : (normalizeIvaTipo(selIvaTipo.value) ?? 16);
+    // Regla: especie→exento | sin factura→0 | con factura→selector
+    const iva_tipo = isEspecie ? "exento" : (!facturado ? 0 : (normalizeIvaTipo(selIvaTipo.value) ?? 16));
     const monto_unitario = toPositiveNumber(inpMonto.value, 0.01);
     let cantidad = parseInt(inpCantidad.value || "1", 10);
     if (!Number.isFinite(cantidad) || cantidad < 1) cantidad = 1;
+    const plazo_tipo = selPlazoTipo.value === "dias" ? "dias" : "proyecto";
+    const plazo_dias = plazo_tipo === "dias"
+      ? Math.max(1, parseInt(inpPlazoDias.value || "1", 10) || 1)
+      : 1;
 
     if (modalMode === "create") {
       const item = normalizeItem({
@@ -1078,6 +1186,8 @@ export async function bindPresupuestoEvents() {
         monto_unitario,
         cantidad,
         iva_tipo,
+        plazo_tipo,
+        plazo_dias,
       });
 
       items.push(item);
@@ -1108,6 +1218,8 @@ export async function bindPresupuestoEvents() {
       monto_unitario,
       cantidad,
       iva_tipo,
+      plazo_tipo,
+      plazo_dias,
       updatedAt: Date.now(),
     });
 
@@ -1166,6 +1278,8 @@ export async function bindPresupuestoEvents() {
       "facturado",
       "monto_unitario",
       "cantidad",
+      "plazo_tipo",
+      "plazo_dias",
       "iva_tipo",
       "subtotal",
       "iva_monto",

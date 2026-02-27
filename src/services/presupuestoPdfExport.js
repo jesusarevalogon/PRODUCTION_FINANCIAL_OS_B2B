@@ -1226,7 +1226,8 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 /** =========================
  *  API pública (vista previa / imprimir)
  *  ========================= */
-export async function exportarPresupuestoPDF() {
+// choice: "1" = Resumen | "2" = Desglose | "3" = Ambos (default)
+export async function exportarPresupuestoPDF({ choice = "3" } = {}) {
   let items = await readItemsFromServerState();
 
   if (!items.length) {
@@ -1257,28 +1258,19 @@ export async function exportarPresupuestoPDF() {
     document.querySelector("[data-project-name]")?.getAttribute("data-project-name") ||
     "Proyecto";
 
-  // ✅ Vista previa: elegir qué quieres ver/exportar
-  // 1 = Resumen (1 hoja)
-  // 2 = Desglose (todas)
-  // 3 = Ambos (resumen + desglose)
-  const choiceRaw = window.prompt(
-    "Vista previa de Presupuesto:\n1) Resumen\n2) Desglose\n3) Ambos\n\nEscribe 1, 2 o 3:",
-    "3"
-  );
-
-  const choice = (choiceRaw || "3").trim();
+  const safeChoice = ["1", "2", "3"].includes(String(choice)) ? String(choice) : "3";
 
   const opts =
-    choice === "1"
+    safeChoice === "1"
       ? { showActions: true, splitPages: true, printResumenOnly: true }
-      : choice === "2"
+      : safeChoice === "2"
       ? { showActions: true, splitPages: true, printDesgloseOnly: true }
       : { showActions: true, splitPages: true };
 
   const printable = buildPrintableHTML(rows, projectName, opts);
 
   const w = window.open("", "_blank");
-  if (!w) throw new Error("Popup bloqueado. Permite popups para esta página.");
+  if (!w) throw new Error("No se pudo abrir la ventana de vista previa. Permite popups para esta página.");
   w.document.open();
   w.document.write(printable);
   w.document.close();

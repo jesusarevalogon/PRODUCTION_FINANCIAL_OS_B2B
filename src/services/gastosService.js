@@ -44,6 +44,9 @@ export async function createExpense({
   monto,
   proveedor = "",
   responsable = "",
+  budget_item_uid = null,
+  comprobante_path = null,
+  comprobante_name = null,
 } = {}) {
   requireSupabase();
   const orgId = getOrgId();
@@ -66,6 +69,9 @@ export async function createExpense({
       proveedor: proveedor?.trim() || null,
       responsable: responsable?.trim() || null,
       created_by: userId,
+      budget_item_uid: budget_item_uid || null,
+      comprobante_path: comprobante_path || null,
+      comprobante_name: comprobante_name || null,
     })
     .select()
     .single();
@@ -79,7 +85,7 @@ export async function updateExpense(id, fields) {
   requireSupabase();
   const orgId = getOrgId();
 
-  const allowed = ["fecha", "cuenta", "concepto", "monto", "proveedor", "responsable"];
+  const allowed = ["fecha", "cuenta", "concepto", "monto", "proveedor", "responsable", "budget_item_uid", "comprobante_path", "comprobante_name"];
   const patch = {};
   for (const k of allowed) {
     if (Object.prototype.hasOwnProperty.call(fields, k)) {

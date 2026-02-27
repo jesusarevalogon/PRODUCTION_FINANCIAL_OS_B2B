@@ -4,6 +4,8 @@
 
    ✅ Requiere proyecto activo
    ✅ Alta de gasto: fecha, cuenta, concepto, monto, proveedor, responsable
+   ✅ Vinculación opcional a partida del presupuesto (budget_item_uid)
+   ✅ Upload de comprobante (ticket/factura) a Supabase Storage
    ✅ Tabla con filtros por cuenta y búsqueda
    ✅ Eliminar gastos
    ✅ Total acumulado visible
@@ -12,6 +14,8 @@
 
 import { getExpenses, createExpense, deleteExpense } from "../services/gastosService.js";
 import { loadModuleState } from "../services/stateService.js";
+import { buildStoragePath, uploadFile, createSignedUrl } from "../services/storageService.js";
+import { STORAGE_BUCKET } from "../utils/constants.js";
 
 const CUENTAS_DEFAULT = [
   "DESARROLLO",
@@ -45,7 +49,7 @@ const CUENTAS_DEFAULT = [
   "CIERRE ADMINISTRATIVO",
 ];
 
-// Intenta cargar cuentas desde el presupuesto activo
+// Carga cuentas desde el presupuesto activo
 async function loadCuentasFromBudget() {
   try {
     const userId = window?.appState?.user?.id;
@@ -60,6 +64,20 @@ async function loadCuentasFromBudget() {
     return cuentas.length ? cuentas : null;
   } catch {
     return null;
+  }
+}
+
+// Carga partidas del presupuesto activo para el selector
+async function loadPartidasFromBudget() {
+  try {
+    const userId = window?.appState?.user?.id;
+    const projectId = window?.appState?.project?.id;
+    if (!userId || !projectId) return [];
+
+    const state = await loadModuleState({ userId, projectId, moduleKey: "presupuesto" });
+    return Array.isArray(state?.items) ? state.items : [];
+  } catch {
+    return [];
   }
 }
 
@@ -112,6 +130,7 @@ export function renderGastosView() {
                 <th>Proveedor</th>
                 <th>Responsable</th>
                 <th style="text-align:right;">Monto</th>
+                <th style="text-align:center;">Comp.</th>
                 <th></th>
               </tr>
             </thead>
@@ -122,7 +141,7 @@ export function renderGastosView() {
 
       <!-- Modal nuevo gasto -->
       <div id="gastosModalBackdrop" class="modal-backdrop" style="display:none;">
-        <div class="modal">
+        <div class="modal" style="max-width:560px;">
           <div class="modal-header">
             <h3>Agregar gasto</h3>
             <button id="gastosModalClose" class="modal-close" aria-label="Cerrar">✕</button>
@@ -137,6 +156,14 @@ export function renderGastosView() {
                 <span>Cuenta *</span>
                 <select id="gastoCuenta"></select>
               </label>
+
+              <label style="grid-column:1/-1;">
+                <span>Partida de presupuesto (opcional)</span>
+                <select id="gastoPartida">
+                  <option value="">— Sin vincular —</option>
+                </select>
+              </label>
+
               <label style="grid-column:1/-1;">
                 <span>Concepto</span>
                 <input id="gastoConcepto" type="text" placeholder="Descripción del gasto" />
@@ -149,12 +176,23 @@ export function renderGastosView() {
                 <span>Proveedor</span>
                 <input id="gastoProveedor" type="text" placeholder="Empresa o persona" />
               </label>
-              <label>
+              <label style="grid-column:1/-1;">
                 <span>Responsable</span>
                 <input id="gastoResponsable" type="text" placeholder="Nombre del responsable" />
               </label>
+
+              <label style="grid-column:1/-1;">
+                <span>Comprobante (PDF / imagen)</span>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">
+                  <input id="gastoComprobante" type="file"
+                         accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                         style="flex:1;min-width:0;" />
+                  <span id="gastoComprobanteLabel" class="muted" style="font-size:11px;"></span>
+                </div>
+              </label>
             </div>
             <p id="gastoValidMsg" class="error" style="display:none;margin-top:10px;"></p>
+            <p id="gastoUploadMsg" class="muted" style="display:none;margin-top:6px;font-size:12px;"></p>
           </div>
           <div class="modal-footer">
             <button id="gastosModalCancel" class="btn btn-ghost">Cancelar</button>
@@ -191,27 +229,32 @@ export async function bindGastosEvents() {
   if (proyNombre) proyNombre.textContent = `Proyecto: ${project.name}`;
 
   // Referencias DOM
-  const tbody         = document.getElementById("gastosTbody");
-  const totalEl       = document.getElementById("gastosTotal");
-  const msgEl         = document.getElementById("gastosMsg");
-  const searchEl      = document.getElementById("gastosSearch");
-  const filterCuenta  = document.getElementById("gastosFilterCuenta");
-  const btnNuevo      = document.getElementById("gastoBtnNuevo");
-  const btnClear      = document.getElementById("gastosBtnClearFilter");
-  const backdrop      = document.getElementById("gastosModalBackdrop");
-  const btnClose      = document.getElementById("gastosModalClose");
-  const btnCancel     = document.getElementById("gastosModalCancel");
-  const btnSave       = document.getElementById("gastosModalSave");
-  const inpFecha      = document.getElementById("gastoFecha");
-  const selCuenta     = document.getElementById("gastoCuenta");
-  const inpConcepto   = document.getElementById("gastoConcepto");
-  const inpMonto      = document.getElementById("gastoMonto");
-  const inpProveedor  = document.getElementById("gastoProveedor");
+  const tbody          = document.getElementById("gastosTbody");
+  const totalEl        = document.getElementById("gastosTotal");
+  const msgEl          = document.getElementById("gastosMsg");
+  const searchEl       = document.getElementById("gastosSearch");
+  const filterCuenta   = document.getElementById("gastosFilterCuenta");
+  const btnNuevo       = document.getElementById("gastoBtnNuevo");
+  const btnClear       = document.getElementById("gastosBtnClearFilter");
+  const backdrop       = document.getElementById("gastosModalBackdrop");
+  const btnClose       = document.getElementById("gastosModalClose");
+  const btnCancel      = document.getElementById("gastosModalCancel");
+  const btnSave        = document.getElementById("gastosModalSave");
+  const inpFecha       = document.getElementById("gastoFecha");
+  const selCuenta      = document.getElementById("gastoCuenta");
+  const selPartida     = document.getElementById("gastoPartida");
+  const inpConcepto    = document.getElementById("gastoConcepto");
+  const inpMonto       = document.getElementById("gastoMonto");
+  const inpProveedor   = document.getElementById("gastoProveedor");
   const inpResponsable = document.getElementById("gastoResponsable");
-  const validMsg      = document.getElementById("gastoValidMsg");
+  const inpComprobante = document.getElementById("gastoComprobante");
+  const comprobanteLabel = document.getElementById("gastoComprobanteLabel");
+  const validMsg       = document.getElementById("gastoValidMsg");
+  const uploadMsg      = document.getElementById("gastoUploadMsg");
 
   let allExpenses = [];
   let cuentas = [];
+  let partidas = [];
 
   // ── helpers ──
   function showMsg(text, isError = false) {
@@ -243,7 +286,7 @@ export async function bindGastosEvents() {
 
   function renderTable(expenses) {
     if (!expenses.length) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:28px;color:var(--muted);">Sin gastos registrados.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:28px;color:var(--muted);">Sin gastos registrados.</td></tr>`;
       return;
     }
 
@@ -255,6 +298,12 @@ export async function bindGastosEvents() {
         <td class="muted">${escapeHtml(e.proveedor || "—")}</td>
         <td class="muted">${escapeHtml(e.responsable || "—")}</td>
         <td style="text-align:right;font-weight:600;">${fmt(e.monto)}</td>
+        <td style="text-align:center;">
+          ${e.comprobante_path
+            ? `<button class="btn btn-light btn-xs" data-path="${escapeHtml(e.comprobante_path)}" data-name="${escapeHtml(e.comprobante_name || 'Ver')}" data-action="verComprobante" title="${escapeHtml(e.comprobante_name || 'Ver comprobante')}">📎</button>`
+            : '<span class="muted" style="font-size:12px;">—</span>'
+          }
+        </td>
         <td style="text-align:center;">
           <button class="btn btn-danger btn-xs" data-id="${e.id}" data-action="delete">✕</button>
         </td>
@@ -274,10 +323,23 @@ export async function bindGastosEvents() {
         }
       });
     });
+
+    // Bind ver comprobante
+    tbody.querySelectorAll("[data-action=verComprobante]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        try {
+          const url = await createSignedUrl({ path: btn.dataset.path, bucket: STORAGE_BUCKET, expiresIn: 3600 });
+          if (url) window.open(url, "_blank");
+          else throw new Error("No se generó URL.");
+        } catch (e) {
+          alert("No se pudo abrir el comprobante: " + (e?.message || String(e)));
+        }
+      });
+    });
   }
 
   async function loadAndRender() {
-    tbody.innerHTML = `<tr><td colspan="7" style="padding:20px;color:var(--muted);">Cargando…</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" style="padding:20px;color:var(--muted);">Cargando…</td></tr>`;
     try {
       allExpenses = await getExpenses();
 
@@ -295,13 +357,50 @@ export async function bindGastosEvents() {
       const filtered = applyFilters(allExpenses, getCurrentFilter());
       renderTable(filtered);
     } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="7" class="error">${escapeHtml(e?.message || String(e))}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" class="error">${escapeHtml(e?.message || String(e))}</td></tr>`;
     }
   }
 
   // ── Cargar cuentas del presupuesto para el select del modal ──
   cuentas = (await loadCuentasFromBudget()) || CUENTAS_DEFAULT;
   selCuenta.innerHTML = cuentas.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+
+  // ── Cargar partidas del presupuesto para el selector ──
+  partidas = await loadPartidasFromBudget();
+  if (partidas.length) {
+    partidas.forEach(p => {
+      const opt = document.createElement("option");
+      opt.value = p.uid || "";
+      const label = [p.cuenta, p.concepto].filter(Boolean).join(" / ");
+      const total = Number.isFinite(Number(p.total)) ? ` (${fmt(Number(p.total))})` : "";
+      opt.textContent = label + total;
+      selPartida.appendChild(opt);
+    });
+  } else {
+    selPartida.innerHTML = `<option value="">— Sin partidas en presupuesto —</option>`;
+    selPartida.disabled = true;
+  }
+
+  // Al seleccionar una partida, sincronizar cuenta
+  selPartida.addEventListener("change", () => {
+    const uid = selPartida.value;
+    if (!uid) return;
+    const p = partidas.find(x => x.uid === uid);
+    if (p?.cuenta) {
+      // Si la cuenta de la partida está en la lista, seleccionarla
+      const opt = Array.from(selCuenta.options).find(o => o.value === p.cuenta);
+      if (opt) selCuenta.value = p.cuenta;
+    }
+    if (p?.concepto && !inpConcepto.value.trim()) {
+      inpConcepto.value = p.concepto;
+    }
+  });
+
+  // Mostrar nombre del archivo seleccionado
+  inpComprobante.addEventListener("change", () => {
+    const file = inpComprobante.files?.[0];
+    comprobanteLabel.textContent = file ? file.name : "";
+  });
 
   // ── Filtros ──
   searchEl.addEventListener("input", () => {
@@ -319,11 +418,16 @@ export async function bindGastosEvents() {
   // ── Modal ──
   function openModal() {
     validMsg.style.display = "none";
+    uploadMsg.style.display = "none";
     inpFecha.value = new Date().toISOString().slice(0, 10);
     inpMonto.value = "";
     inpConcepto.value = "";
     inpProveedor.value = "";
     inpResponsable.value = "";
+    selPartida.value = "";
+    comprobanteLabel.textContent = "";
+    // Reset file input
+    inpComprobante.value = "";
     backdrop.style.display = "flex";
     inpMonto.focus();
   }
@@ -336,6 +440,7 @@ export async function bindGastosEvents() {
 
   btnSave.addEventListener("click", async () => {
     validMsg.style.display = "none";
+    uploadMsg.style.display = "none";
 
     const fecha = inpFecha.value;
     const cuenta = selCuenta.value;
@@ -361,6 +466,38 @@ export async function bindGastosEvents() {
     btnSave.textContent = "Guardando…";
 
     try {
+      // ── Subir comprobante si hay archivo ──
+      let comprobante_path = null;
+      let comprobante_name = null;
+      const comprobanteFile = inpComprobante.files?.[0];
+
+      if (comprobanteFile) {
+        uploadMsg.textContent = "Subiendo comprobante…";
+        uploadMsg.style.display = "block";
+
+        const userId = window.appState.user.id;
+        const projectId = window.appState.project.id;
+        const path = buildStoragePath({
+          userId,
+          projectId,
+          area: "gastos",
+          docKey: "comprobantes",
+          filename: comprobanteFile.name,
+        });
+
+        await uploadFile({
+          file: comprobanteFile,
+          path,
+          bucket: STORAGE_BUCKET,
+          upsert: false,
+          contentType: comprobanteFile.type || undefined,
+        });
+
+        comprobante_path = path;
+        comprobante_name = comprobanteFile.name;
+        uploadMsg.style.display = "none";
+      }
+
       await createExpense({
         fecha,
         cuenta,
@@ -368,13 +505,18 @@ export async function bindGastosEvents() {
         monto,
         proveedor: inpProveedor.value.trim(),
         responsable: inpResponsable.value.trim(),
+        budget_item_uid: selPartida.value || null,
+        comprobante_path,
+        comprobante_name,
       });
+
       closeModal();
       showMsg("Gasto registrado correctamente.");
       await loadAndRender();
     } catch (e) {
       validMsg.textContent = e?.message || String(e);
       validMsg.style.display = "block";
+      uploadMsg.style.display = "none";
     } finally {
       btnSave.disabled = false;
       btnSave.textContent = "Guardar gasto";
