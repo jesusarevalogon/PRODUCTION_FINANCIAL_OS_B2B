@@ -534,6 +534,20 @@ export async function bindPresupuestoEvents() {
 
   renderAll();
 
+  // ── Guardar desde Vista Previa (inline edit) ──
+  // La ventana popup de Vista Previa llama window.opener.__presupuestoSaveItems(newItems)
+  // para persistir cambios hechos en la preview y reflejarlos en esta vista.
+  window.__presupuestoSaveItems = async function (newItems) {
+    if (!Array.isArray(newItems)) throw new Error("newItems must be an array");
+    items = newItems.map((it) => {
+      const etapa = normalizeEtapa(it.etapa) || ETAPAS[0];
+      const cuenta = normalizeCuenta(it.cuenta) || CUENTAS[0];
+      return normalizeItem({ ...it, etapa, cuenta });
+    });
+    await saveItemsAsync();
+    renderAll();
+  };
+
   // ── Listeners ──
   btnCrear.addEventListener("click", () => openModal("create"));
   btnEditar.addEventListener("click", () => openModal("edit"));

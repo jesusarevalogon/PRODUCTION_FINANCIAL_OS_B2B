@@ -576,6 +576,7 @@ async function readItemsFromServerState() {
       }
 
       return {
+        uid: it?.uid ?? null,
         etapa,
         concepto,
         cuentaNombre,
@@ -951,6 +952,11 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   const splitPages = opts.splitPages === true;
   const printResumenOnly = opts.printResumenOnly === true;
   const printDesgloseOnly = opts.printDesgloseOnly === true;
+  const rawItems = Array.isArray(opts.rawItems) ? opts.rawItems : [];
+  const hasInlineEdit = rawItems.length > 0 && showActions;
+  function safeJsonStr(obj) {
+    return JSON.stringify(obj).replace(/<\//g, "<\\/");
+  }
 
   const summaryEtapas = buildBudgetSummaryEtapasFromRows(rows, {
     titulo: projectName || "Proyecto",
@@ -1081,18 +1087,19 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
         acc.efectivo += ap.efectivo;
         acc.especie += ap.especie;
 
+        const uidAttr = r.uid ? ` data-uid="${escapeHtml(r.uid)}"` : "";
         bodyRows += `
-          <tr class="item">
+          <tr class="item"${uidAttr}>
             <td class="code">${r.subcuenta}</td>
-            <td class="desc">${escapeHtml(r.concepto)}</td>
+            <td class="desc editable-cell" data-field="concepto">${escapeHtml(r.concepto)}</td>
             <td class="tipo">${r.facturado ? "Con factura" : "Sin factura"}</td>
-            <td class="num">${r.cantidad}</td>
-            <td class="num">${money(r.monto_unitario)}</td>
-            <td class="num">${money(r.subtotal)}</td>
-            <td class="num">${money(r.iva_monto)}</td>
-            <td class="num">${money(r.total)}</td>
-            <td class="num">${ap.efectivo ? money(ap.efectivo) : ""}</td>
-            <td class="num">${ap.especie ? money(ap.especie) : ""}</td>
+            <td class="num editable-cell" data-field="cantidad">${r.cantidad}</td>
+            <td class="num editable-cell" data-field="monto_unitario">${money(r.monto_unitario)}</td>
+            <td class="num" data-field="subtotal">${money(r.subtotal)}</td>
+            <td class="num" data-field="iva_monto">${money(r.iva_monto)}</td>
+            <td class="num" data-field="total">${money(r.total)}</td>
+            <td class="num" data-field="efectivo">${ap.efectivo ? money(ap.efectivo) : ""}</td>
+            <td class="num" data-field="especie">${ap.especie ? money(ap.especie) : ""}</td>
           </tr>
         `;
       }
@@ -1154,6 +1161,12 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 
   tr { break-inside: avoid; }
 
+  /* Inline edit */
+  .editable-cell { cursor: pointer; }
+  .editable-cell:hover { outline: 2px dashed #7c5cbf; outline-offset: -2px; }
+  @media print { .editable-cell { cursor: default; } .editable-cell:hover { outline: none; } }
+  #__dirtyBadge { background:#f59e0b; color:#000; padding:6px 12px; border-radius:8px; font-weight:800; font-size:12px; }
+
   /* ✅ Separación para export bytes (cuando splitPages) */
   .pdf-resumen{ page-break-after: always; break-after: page; }
 
@@ -1182,6 +1195,8 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
     showActions
       ? `
   <div class="top-actions no-print">
+    <span id="__dirtyBadge" style="display:none;">Cambios sin guardar</span>
+    <button id="__btnGuardar" class="btn-export" disabled>Guardar cambios</button>
     <button class="btn-export" onclick="window.print()">EXPORTAR PDF</button>
   </div>
   `
@@ -1217,6 +1232,171 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
     </tbody>
   </table>
   ${splitPages ? `</div>` : ``}
+${hasInlineEdit ? `<script>
+(function () {
+  "use strict";
+  var RAW = ${safeJsonStr(rawItems)};
+  var byUid = Object.create(null);
+  for (var _i = 0; _i < RAW.length; _i++) {
+    var _it = RAW[_i];
+    if (_it && _it.uid) byUid[_it.uid] = _it;
+  }
+  var draftMap = Object.create(null);
+  var isDirty = false;
+
+  function round2(n) { return Math.round(n * 100) / 100; }
+  function money(n) {
+    return Number(n || 0).toLocaleString("es-MX", { style: "currency", currency: "MXN", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function getDraft(uid) {
+    if (!draftMap[uid]) {
+      var base = byUid[uid];
+      draftMap[uid] = base ? JSON.parse(JSON.stringify(base)) : { uid: uid };
+    }
+    return draftMap[uid];
+  }
+  function recalcDraft(d) {
+    var plazo = d.plazo_tipo === "dias" ? (Number(d.plazo_cantidad) || 1) : 1;
+    d.subtotal = round2((Number(d.monto_unitario) || 0) * (Number(d.cantidad) || 1) * plazo);
+    var ivaTipo = d.iva_tipo;
+    var ivaRate = (ivaTipo === "exento" || ivaTipo === 0 || ivaTipo === "0") ? 0 : (Number(ivaTipo) / 100);
+    if (!Number.isFinite(ivaRate) || ivaRate < 0) ivaRate = 0;
+    d.iva_monto = round2(d.subtotal * ivaRate);
+    d.total = round2(d.subtotal + d.iva_monto);
+    d.updatedAt = Date.now();
+  }
+  function updateRowTotals(uid) {
+    var d = draftMap[uid];
+    if (!d) return;
+    recalcDraft(d);
+    var tr = document.querySelector("tr[data-uid=\\"" + uid + "\\"]");
+    if (!tr) return;
+    var tds = tr.querySelectorAll("td");
+    // 0=code 1=concepto 2=facturado 3=cantidad 4=monto_unitario 5=subtotal 6=iva_monto 7=total 8=efectivo 9=especie
+    if (tds[5]) tds[5].textContent = money(d.subtotal);
+    if (tds[6]) tds[6].textContent = money(d.iva_monto);
+    if (tds[7]) tds[7].textContent = money(d.total);
+    var pm = d.payment_method || "";
+    if (tds[8]) tds[8].textContent = pm !== "especie_productora" ? money(d.total) : "";
+    if (tds[9]) tds[9].textContent = pm === "especie_productora" ? money(d.total) : "";
+    markDirty();
+  }
+  function markDirty() {
+    if (isDirty) return;
+    isDirty = true;
+    var badge = document.getElementById("__dirtyBadge");
+    if (badge) badge.style.display = "inline-block";
+    var btn = document.getElementById("__btnGuardar");
+    if (btn) btn.disabled = false;
+  }
+  function commitEdit(uid, field, rawValue) {
+    var d = getDraft(uid);
+    if (field === "concepto") {
+      d.concepto = String(rawValue).trim();
+    } else if (field === "cantidad") {
+      var nc = parseInt(rawValue, 10);
+      d.cantidad = Number.isFinite(nc) && nc >= 1 ? nc : 1;
+    } else if (field === "monto_unitario") {
+      var nm = parseFloat(String(rawValue).replace(/[$,\\s]/g, ""));
+      d.monto_unitario = Number.isFinite(nm) && nm >= 0 ? round2(nm) : 0.01;
+    }
+    updateRowTotals(uid);
+  }
+  function displayValue(d, field) {
+    if (field === "concepto") return d.concepto || "";
+    if (field === "cantidad") return String(d.cantidad);
+    if (field === "monto_unitario") return money(d.monto_unitario);
+    return "";
+  }
+  function editableRawValue(d, field) {
+    if (field === "concepto") return d.concepto || "";
+    if (field === "cantidad") return String(d.cantidad);
+    if (field === "monto_unitario") return String(d.monto_unitario);
+    return "";
+  }
+  function startEdit(td, uid, field) {
+    if (td.querySelector("input")) return;
+    var d = getDraft(uid);
+    var inp = document.createElement("input");
+    inp.type = field === "concepto" ? "text" : "number";
+    inp.value = editableRawValue(d, field);
+    if (field === "cantidad") { inp.step = "1"; inp.min = "1"; }
+    if (field === "monto_unitario") { inp.step = "0.01"; inp.min = "0.01"; }
+    inp.style.cssText = "width:100%;box-sizing:border-box;padding:2px 4px;font-size:inherit;font-family:inherit;border:2px solid #7c5cbf;border-radius:4px;background:#fffde7;";
+    td.textContent = "";
+    td.appendChild(inp);
+    inp.focus();
+    inp.select();
+    var committed = false;
+    function commit() {
+      if (committed) return;
+      committed = true;
+      commitEdit(uid, field, inp.value);
+      td.textContent = displayValue(getDraft(uid), field);
+    }
+    function cancel() {
+      if (committed) return;
+      committed = true;
+      td.textContent = displayValue(d, field);
+    }
+    inp.addEventListener("blur", commit);
+    inp.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); commit(); }
+      if (e.key === "Escape") { e.preventDefault(); inp.removeEventListener("blur", commit); cancel(); }
+    });
+  }
+  var trs = document.querySelectorAll("tr[data-uid]");
+  for (var ri = 0; ri < trs.length; ri++) {
+    (function (tr) {
+      var uid = tr.getAttribute("data-uid");
+      if (!uid || !byUid[uid]) return;
+      var tds = tr.querySelectorAll("td");
+      var defs = [{ idx: 1, field: "concepto" }, { idx: 3, field: "cantidad" }, { idx: 4, field: "monto_unitario" }];
+      for (var ei = 0; ei < defs.length; ei++) {
+        (function (def) {
+          var td = tds[def.idx];
+          if (!td) return;
+          td.title = "Doble clic para editar";
+          td.addEventListener("dblclick", function () { startEdit(td, uid, def.field); });
+        })(defs[ei]);
+      }
+    })(trs[ri]);
+  }
+  var btnGuardar = document.getElementById("__btnGuardar");
+  if (btnGuardar) {
+    btnGuardar.addEventListener("click", function () {
+      var btn = this;
+      if (!window.opener || typeof window.opener.__presupuestoSaveItems !== "function") {
+        alert("No se puede guardar: la ventana de Presupuesto ya no está disponible.\\nCierra esta ventana y ábrela de nuevo desde el módulo Presupuesto.");
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Guardando…";
+      var finalItems = RAW.map(function (it) {
+        if (!it || !it.uid || !draftMap[it.uid]) return it;
+        return Object.assign({}, it, draftMap[it.uid]);
+      });
+      Promise.resolve(window.opener.__presupuestoSaveItems(finalItems)).then(function () {
+        isDirty = false;
+        var badge = document.getElementById("__dirtyBadge");
+        if (badge) badge.style.display = "none";
+        btn.textContent = "Cambios guardados ✓";
+        btn.disabled = false;
+        setTimeout(function () { if (!isDirty) btn.textContent = "Guardar cambios"; }, 2500);
+      }).catch(function (err) {
+        btn.textContent = "Guardar cambios";
+        btn.disabled = false;
+        alert("Error al guardar: " + ((err && err.message) ? err.message : String(err)));
+      });
+    });
+  }
+  window.addEventListener("beforeunload", function (e) {
+    if (!isDirty) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
+})();
+<\/script>` : ``}
 </body>
 </html>`;
 
@@ -1229,6 +1409,16 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 // choice: "1" = Resumen | "2" = Desglose | "3" = Ambos (default)
 export async function exportarPresupuestoPDF({ choice = "3" } = {}) {
   let items = await readItemsFromServerState();
+
+  // Also load the full raw items (with all fields) for inline editing in the preview
+  let rawItems = [];
+  try {
+    const { userId, projectId } = await getAuthCtx();
+    if (userId && projectId) {
+      const state = await loadModuleState({ userId, projectId, moduleKey: "presupuesto" });
+      rawItems = Array.isArray(state?.items) ? state.items : [];
+    }
+  } catch { /* ignore — inline edit simply won't work without rawItems */ }
 
   if (!items.length) {
     try {
@@ -1262,10 +1452,10 @@ export async function exportarPresupuestoPDF({ choice = "3" } = {}) {
 
   const opts =
     safeChoice === "1"
-      ? { showActions: true, splitPages: true, printResumenOnly: true }
+      ? { showActions: true, splitPages: true, printResumenOnly: true, rawItems }
       : safeChoice === "2"
-      ? { showActions: true, splitPages: true, printDesgloseOnly: true }
-      : { showActions: true, splitPages: true };
+      ? { showActions: true, splitPages: true, printDesgloseOnly: true, rawItems }
+      : { showActions: true, splitPages: true, rawItems };
 
   const printable = buildPrintableHTML(rows, projectName, opts);
 
