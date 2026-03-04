@@ -5,6 +5,8 @@ import {
   SOFT_LIMIT_BYTES,
   ALLOWED_MIME_DEFAULT,
   ALLOWED_MIME_LOGO,
+  ALLOWED_MIME_COMPROBANTE,
+  COMPROBANTE_MAX_BYTES,
   MIME,
 } from "../utils/constants.js";
 
@@ -91,6 +93,19 @@ export function validarLogo(file, opts = {}) {
   return validarArchivo(file, {
     ...opts,
     allowedMime: ALLOWED_MIME_LOGO,
+  });
+}
+
+/**
+ * Atajo: Comprobantes de gastos (PDF, JPEG, PNG, WEBP, HEIC/HEIF).
+ * allowUnknownType=true para HEIC/HEIF que algunos browsers no reportan MIME.
+ */
+export function validarComprobante(file, opts = {}) {
+  return validarArchivo(file, {
+    allowUnknownType: true,
+    ...opts,
+    allowedMime: opts.allowedMime || ALLOWED_MIME_COMPROBANTE,
+    maxBytes: opts.maxBytes ?? COMPROBANTE_MAX_BYTES,
   });
 }
 

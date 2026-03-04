@@ -40,6 +40,9 @@ export const MIME = Object.freeze({
   PDF: "application/pdf",
   PNG: "image/png",
   JPG: "image/jpeg",
+  WEBP: "image/webp",
+  HEIC: "image/heic",
+  HEIF: "image/heif",
 });
 
 // Para el módulo Documentación (general)
@@ -54,6 +57,19 @@ export const ALLOWED_MIME_LOGO = Object.freeze([
   MIME.PNG,
   MIME.JPG,
 ]);
+
+// Para comprobantes de gastos (recibos, facturas — PDF + imágenes comunes)
+export const ALLOWED_MIME_COMPROBANTE = Object.freeze([
+  MIME.PDF,
+  MIME.PNG,
+  MIME.JPG,
+  MIME.WEBP,
+  MIME.HEIC,
+  MIME.HEIF,
+]);
+
+export const COMPROBANTE_MAX_MB = 10;
+export const COMPROBANTE_MAX_BYTES = COMPROBANTE_MAX_MB * 1024 * 1024;
 
 // ===============================
 // Catálogo de keys usados en Storage/Documentación V2

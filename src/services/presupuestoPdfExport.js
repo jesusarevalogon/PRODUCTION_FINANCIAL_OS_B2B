@@ -999,7 +999,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   const renderEtapaBanner = (etapa) => {
     const c = COLORS.etapa[etapa];
     return `<tr class="etapa-banner" style="background:${c.bg}; color:${c.fg};">
-      <td colspan="12">${labelEtapa(etapa)}</td>
+      <td colspan="${hasInlineEdit ? 13 : 12}">${labelEtapa(etapa)}</td>
     </tr>`;
   };
 
@@ -1008,7 +1008,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
     const c = COLORS.cuenta[key];
     return `<tr class="cuenta-group" style="background:${c.bg}; color:${c.fg};">
       <td class="code">${numeroCuenta}</td>
-      <td class="desc" colspan="11">${escapeHtml(cuentaNombre)}</td>
+      <td class="desc" colspan="${hasInlineEdit ? 12 : 11}">${escapeHtml(cuentaNombre)}</td>
     </tr>`;
   };
 
@@ -1027,6 +1027,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
       <td class="num total-highlight">${money(acc.total)}</td>
       <td class="num">${acc.efectivo ? money(acc.efectivo) : ""}</td>
       <td class="num">${acc.especie ? money(acc.especie) : ""}</td>
+      ${hasInlineEdit ? `<td class="no-print"></td>` : ``}
     </tr>`;
   };
 
@@ -1102,6 +1103,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
             <td class="num" data-field="total">${money(r.total)}</td>
             <td class="num" data-field="efectivo">${ap.efectivo ? money(ap.efectivo) : ""}</td>
             <td class="num" data-field="especie">${ap.especie ? money(ap.especie) : ""}</td>
+            ${hasInlineEdit && r.uid ? `<td class="no-print" style="text-align:center;"><button class="btn-edit-item" data-uid="${escapeHtml(r.uid)}">✏ Editar</button></td>` : hasInlineEdit ? `<td class="no-print"></td>` : ``}
           </tr>
         `;
       }
@@ -1168,7 +1170,26 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   /* Inline edit */
   .editable-cell { cursor: pointer; }
   .editable-cell:hover { outline: 2px dashed #7c5cbf; outline-offset: -2px; }
-  @media print { .editable-cell { cursor: default; } .editable-cell:hover { outline: none; } }
+
+  /* Botón Editar por renglón */
+  .btn-edit-item {
+    border: 1px solid rgba(79,124,255,.45);
+    background: rgba(79,124,255,.08);
+    color: #4f7cff;
+    padding: 3px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 10.5px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .btn-edit-item:hover { background: rgba(79,124,255,.2); }
+
+  @media print {
+    .no-print { display: none !important; }
+    .editable-cell { cursor: default; }
+    .editable-cell:hover { outline: none; }
+  }
   #__dirtyBadge { background:#f59e0b; color:#000; padding:6px 12px; border-radius:8px; font-weight:800; font-size:12px; }
 
   @media print { body { background:#fff; } }
@@ -1204,6 +1225,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
         <th rowspan="2">IVA</th>
         <th rowspan="2">TOTAL</th>
         <th colspan="2">APORTACIÓN</th>
+        ${hasInlineEdit ? `<th rowspan="2" class="no-print" style="width:64px;">ACCIONES</th>` : ``}
       </tr>
       <tr>
         <th>EFECTIVO</th>
@@ -1214,7 +1236,55 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
       ${bodyRows}
     </tbody>
   </table>
-${hasInlineEdit ? `<script>
+${hasInlineEdit ? `
+<!-- Modal edición de partida -->
+<div id="__editModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9998;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:12px;padding:22px 24px;width:430px;max-width:94vw;max-height:92vh;overflow:auto;box-shadow:0 10px 50px rgba(0,0,0,.35);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h3 style="margin:0;font-size:15px;font-weight:800;">Editar partida</h3>
+      <button id="__editModalClose" type="button" style="background:none;border:none;font-size:18px;cursor:pointer;padding:0 4px;line-height:1;">✕</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <label style="grid-column:1/-1;font-size:12px;font-weight:600;display:flex;flex-direction:column;gap:4px;">
+        Descripción / Concepto *
+        <input id="__eConcepto" type="text" style="padding:7px 10px;border:1px solid rgba(0,0,0,.22);border-radius:6px;font-size:13px;" />
+      </label>
+      <label style="grid-column:1/-1;font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px;cursor:pointer;">
+        <input id="__eFacturado" type="checkbox" style="width:15px;height:15px;" />
+        Con factura
+      </label>
+      <label style="font-size:12px;font-weight:600;display:flex;flex-direction:column;gap:4px;">
+        Cantidad *
+        <input id="__eCantidad" type="number" min="1" step="1" style="padding:7px 10px;border:1px solid rgba(0,0,0,.22);border-radius:6px;font-size:13px;" />
+      </label>
+      <label style="font-size:12px;font-weight:600;display:flex;flex-direction:column;gap:4px;">
+        Monto unitario *
+        <input id="__eMonto" type="number" min="0.01" step="0.01" style="padding:7px 10px;border:1px solid rgba(0,0,0,.22);border-radius:6px;font-size:13px;" />
+      </label>
+      <label style="grid-column:1/-1;font-size:12px;font-weight:600;display:flex;flex-direction:column;gap:4px;">
+        Tipo de pago
+        <select id="__ePlazoTipo" style="padding:7px 10px;border:1px solid rgba(0,0,0,.22);border-radius:6px;font-size:13px;">
+          <option value="proyecto">Por proyecto</option>
+          <option value="dias">Por día</option>
+        </select>
+      </label>
+      <div id="__eDiasWrap" style="grid-column:1/-1;display:none;">
+        <label style="font-size:12px;font-weight:600;display:flex;flex-direction:column;gap:4px;">
+          Días *
+          <input id="__eDias" type="number" min="1" step="1" style="padding:7px 10px;border:1px solid rgba(0,0,0,.22);border-radius:6px;font-size:13px;" />
+        </label>
+      </div>
+    </div>
+    <div id="__ePreview" style="margin-top:14px;padding:10px 12px;background:#f5f5f5;border-radius:6px;font-size:12px;font-variant-numeric:tabular-nums;color:#333;"></div>
+    <p id="__eErr" style="display:none;font-size:12px;margin:8px 0 0;"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      <button id="__eCancel" type="button" style="padding:8px 14px;border:1px solid rgba(0,0,0,.2);background:#f5f5f5;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;">Cancelar</button>
+      <button id="__eSave" type="button" style="padding:8px 16px;border:none;background:#4f7cff;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;">Guardar cambios</button>
+    </div>
+  </div>
+</div>
+
+<script>
 (function () {
   "use strict";
   var RAW = ${safeJsonStr(rawItems)};
@@ -1225,6 +1295,7 @@ ${hasInlineEdit ? `<script>
   }
   var draftMap = Object.create(null);
   var isDirty = false;
+  var __editingUid = null;
 
   function round2(n) { return Math.round(n * 100) / 100; }
   function money(n) {
@@ -1237,7 +1308,13 @@ ${hasInlineEdit ? `<script>
     }
     return draftMap[uid];
   }
+
+  // Misma lógica de recalc que normalizeItem en presupuesto.js
   function recalcDraft(d) {
+    var pm = d.payment_method || "";
+    var isEspecie = pm === "especie_productora";
+    if (isEspecie) { d.facturado = false; d.iva_tipo = "exento"; }
+    else if (!d.facturado) { d.iva_tipo = 0; }
     var plazo = d.plazo_tipo === "dias" ? (Number(d.plazo_cantidad) || 1) : 1;
     d.subtotal = round2((Number(d.monto_unitario) || 0) * (Number(d.cantidad) || 1) * plazo);
     var ivaTipo = d.iva_tipo;
@@ -1247,30 +1324,193 @@ ${hasInlineEdit ? `<script>
     d.total = round2(d.subtotal + d.iva_monto);
     d.updatedAt = Date.now();
   }
-  function updateRowTotals(uid) {
+
+  // Actualiza TODAS las celdas visibles de una fila tras editar
+  // cols: 0=code 1=concepto 2=facturado 3=tipoPago 4=dias 5=cantidad 6=monto_unitario
+  //       7=subtotal 8=iva_monto 9=total 10=efectivo 11=especie 12=acciones
+  function updateRowAllCells(uid) {
     var d = draftMap[uid];
     if (!d) return;
     recalcDraft(d);
-    var tr = document.querySelector("tr[data-uid=\\"" + uid + "\\"]");
+    var tr = document.querySelector('tr[data-uid="' + uid + '"]');
     if (!tr) return;
     var tds = tr.querySelectorAll("td");
-    // 0=code 1=concepto 2=facturado 3=tipoPago 4=dias 5=cantidad 6=monto_unitario 7=subtotal 8=iva_monto 9=total 10=efectivo 11=especie
+    if (tds[1]) tds[1].textContent = d.concepto || "";
+    if (tds[2]) tds[2].textContent = d.facturado ? "Con factura" : "Sin factura";
+    if (tds[3]) tds[3].textContent = d.plazo_tipo === "dias" ? "Por día" : "Por proyecto";
+    if (tds[4]) tds[4].textContent = d.plazo_tipo === "dias" ? (Number(d.plazo_cantidad) || 1) : "\\u2014";
+    if (tds[5]) tds[5].textContent = String(d.cantidad || 1);
+    if (tds[6]) tds[6].textContent = money(d.monto_unitario);
     if (tds[7]) tds[7].textContent = money(d.subtotal);
     if (tds[8]) tds[8].textContent = money(d.iva_monto);
     if (tds[9]) tds[9].textContent = money(d.total);
-    var pm = d.payment_method || "";
-    if (tds[10]) tds[10].textContent = pm !== "especie_productora" ? money(d.total) : "";
-    if (tds[11]) tds[11].textContent = pm === "especie_productora" ? money(d.total) : "";
-    markDirty();
+    var pmx = d.payment_method || "";
+    if (tds[10]) tds[10].textContent = pmx !== "especie_productora" ? money(d.total) : "";
+    if (tds[11]) tds[11].textContent = pmx === "especie_productora" ? money(d.total) : "";
   }
+
   function markDirty() {
-    if (isDirty) return;
     isDirty = true;
     var badge = document.getElementById("__dirtyBadge");
     if (badge) badge.style.display = "inline-block";
     var btn = document.getElementById("__btnGuardar");
     if (btn) btn.disabled = false;
   }
+
+  function doSaveItems(onDone) {
+    if (!window.opener || typeof window.opener.__presupuestoSaveItems !== "function") {
+      if (onDone) onDone(new Error("La ventana de Presupuesto no está disponible. Ciérrala y ábrela de nuevo."));
+      return;
+    }
+    var finalItems = RAW.map(function (it) {
+      if (!it || !it.uid || !draftMap[it.uid]) return it;
+      return Object.assign({}, it, draftMap[it.uid]);
+    });
+    Promise.resolve(window.opener.__presupuestoSaveItems(finalItems))
+      .then(function () {
+        isDirty = false;
+        var badge = document.getElementById("__dirtyBadge");
+        if (badge) badge.style.display = "none";
+        if (onDone) onDone(null);
+      })
+      .catch(function (err) { if (onDone) onDone(err); });
+  }
+
+  // ── Modal de edición ──
+  var __modal   = document.getElementById("__editModal");
+  var __eCnc    = document.getElementById("__eConcepto");
+  var __eFact   = document.getElementById("__eFacturado");
+  var __eCant   = document.getElementById("__eCantidad");
+  var __eMnto   = document.getElementById("__eMonto");
+  var __ePlazo  = document.getElementById("__ePlazoTipo");
+  var __eDWrap  = document.getElementById("__eDiasWrap");
+  var __eDias   = document.getElementById("__eDias");
+  var __ePrev   = document.getElementById("__ePreview");
+  var __eErr    = document.getElementById("__eErr");
+  var __eSaveB  = document.getElementById("__eSave");
+
+  function recalcModalPreview() {
+    var base = __editingUid ? (byUid[__editingUid] || {}) : {};
+    var pm = base.payment_method || "transferencia";
+    var isEspecie = pm === "especie_productora";
+    var facturado = isEspecie ? false : (__eFact ? __eFact.checked : false);
+    var iva_tipo;
+    if (isEspecie) iva_tipo = "exento";
+    else if (!facturado) iva_tipo = 0;
+    else iva_tipo = (base.iva_tipo != null) ? base.iva_tipo : 0;
+    var plazoTipo = __ePlazo ? __ePlazo.value : "proyecto";
+    var plazo = plazoTipo === "dias" ? (parseInt(__eDias ? __eDias.value : "1") || 1) : 1;
+    var monto  = parseFloat(__eMnto  ? __eMnto.value  : "0") || 0;
+    var cant   = parseInt(__eCant   ? __eCant.value   : "1") || 1;
+    var sub    = round2(monto * cant * plazo);
+    var ivaRate = (iva_tipo === "exento" || iva_tipo === 0 || iva_tipo === "0") ? 0 : (Number(iva_tipo) / 100);
+    if (!Number.isFinite(ivaRate) || ivaRate < 0) ivaRate = 0;
+    var ivaAmt = round2(sub * ivaRate);
+    var tot    = round2(sub + ivaAmt);
+    if (__ePrev) __ePrev.textContent = "Subtotal: " + money(sub) + "  \\u00b7  IVA: " + money(ivaAmt) + "  \\u00b7  Total: " + money(tot);
+  }
+
+  function openEditModal(uid) {
+    if (!byUid[uid]) return;
+    __editingUid = uid;
+    var d = getDraft(uid);
+    if (__eCnc)   __eCnc.value   = d.concepto || "";
+    if (__eFact)  __eFact.checked = Boolean(d.facturado);
+    if (__eCant)  __eCant.value  = String(d.cantidad || 1);
+    if (__eMnto)  __eMnto.value  = String(d.monto_unitario || "");
+    if (__ePlazo) __ePlazo.value = d.plazo_tipo === "dias" ? "dias" : "proyecto";
+    if (__eDias)  __eDias.value  = String(d.plazo_cantidad || 1);
+    if (__eDWrap) __eDWrap.style.display = (d.plazo_tipo === "dias") ? "block" : "none";
+    if (__eErr)   { __eErr.textContent = ""; __eErr.style.display = "none"; }
+    recalcModalPreview();
+    if (__modal) __modal.style.display = "flex";
+    if (__eCnc) { __eCnc.focus(); __eCnc.select(); }
+  }
+
+  function closeEditModal() {
+    __editingUid = null;
+    if (__modal) __modal.style.display = "none";
+  }
+
+  function saveEditModal() {
+    if (!__editingUid) return;
+    var concepto = (__eCnc ? __eCnc.value : "").trim();
+    if (!concepto) {
+      if (__eErr) { __eErr.textContent = "El concepto no puede estar vacío."; __eErr.style.color = "#e53e3e"; __eErr.style.display = "block"; }
+      return;
+    }
+    var monto = parseFloat(__eMnto ? __eMnto.value : "0");
+    if (!Number.isFinite(monto) || monto <= 0) {
+      if (__eErr) { __eErr.textContent = "El monto debe ser mayor a 0."; __eErr.style.color = "#e53e3e"; __eErr.style.display = "block"; }
+      return;
+    }
+    var cantidad = parseInt(__eCant ? __eCant.value : "1", 10);
+    if (!Number.isFinite(cantidad) || cantidad < 1) cantidad = 1;
+    var plazoTipo = (__ePlazo ? __ePlazo.value : "proyecto") === "dias" ? "dias" : "proyecto";
+    var plazoCant = plazoTipo === "dias" ? Math.max(1, parseInt(__eDias ? __eDias.value : "1") || 1) : 1;
+
+    var d = getDraft(__editingUid);
+    var pm = d.payment_method || "transferencia";
+    var isEspecie = pm === "especie_productora";
+    d.concepto = concepto;
+    d.facturado = isEspecie ? false : (__eFact ? __eFact.checked : false);
+    if (isEspecie)     { d.iva_tipo = "exento"; }
+    else if (!d.facturado) { d.iva_tipo = 0; }
+    // else: mantener iva_tipo existente cuando facturado=true
+    d.cantidad       = cantidad;
+    d.monto_unitario = round2(monto);
+    d.plazo_tipo     = plazoTipo;
+    d.plazo_cantidad = plazoCant;
+    recalcDraft(d);
+    updateRowAllCells(__editingUid);
+    markDirty();
+
+    if (__eSaveB) { __eSaveB.disabled = true; __eSaveB.textContent = "Guardando\\u2026"; }
+    if (__eErr)   { __eErr.textContent = ""; __eErr.style.display = "none"; }
+
+    doSaveItems(function (err) {
+      if (__eSaveB) { __eSaveB.disabled = false; __eSaveB.textContent = "Guardar cambios"; }
+      if (err) {
+        if (__eErr) { __eErr.textContent = "Error al guardar: " + ((err && err.message) ? err.message : String(err)); __eErr.style.color = "#e53e3e"; __eErr.style.display = "block"; }
+      } else {
+        closeEditModal();
+      }
+    });
+  }
+
+  // Listeners del modal
+  if (__ePlazo) __ePlazo.addEventListener("change", function () {
+    if (__eDWrap) __eDWrap.style.display = __ePlazo.value === "dias" ? "block" : "none";
+    recalcModalPreview();
+  });
+  var __recalcEls = [__eCnc, __eCant, __eMnto, __eDias];
+  for (var _fi = 0; _fi < __recalcEls.length; _fi++) {
+    if (__recalcEls[_fi]) __recalcEls[_fi].addEventListener("input", recalcModalPreview);
+  }
+  if (__eFact) __eFact.addEventListener("change", recalcModalPreview);
+  var __mClose = document.getElementById("__editModalClose");
+  if (__mClose) __mClose.addEventListener("click", closeEditModal);
+  var __mCncl  = document.getElementById("__eCancel");
+  if (__mCncl)  __mCncl.addEventListener("click", closeEditModal);
+  if (__eSaveB) __eSaveB.addEventListener("click", saveEditModal);
+  if (__modal)  __modal.addEventListener("click", function (e) { if (e.target === __modal) closeEditModal(); });
+
+  // Cerrar modal con Escape
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && __editingUid) closeEditModal();
+  });
+
+  // Bind botones "Editar" de cada fila
+  var __editBtns = document.querySelectorAll(".btn-edit-item");
+  for (var _bi = 0; _bi < __editBtns.length; _bi++) {
+    (function (btn) {
+      var uid = btn.getAttribute("data-uid");
+      if (!uid || !byUid[uid]) return;
+      btn.addEventListener("click", function () { openEditModal(uid); });
+    })(__editBtns[_bi]);
+  }
+
+  // ── Inline double-click (concepto, cantidad, monto) ──
   function commitEdit(uid, field, rawValue) {
     var d = getDraft(uid);
     if (field === "concepto") {
@@ -1280,9 +1520,10 @@ ${hasInlineEdit ? `<script>
       d.cantidad = Number.isFinite(nc) && nc >= 1 ? nc : 1;
     } else if (field === "monto_unitario") {
       var nm = parseFloat(String(rawValue).replace(/[$,\\s]/g, ""));
-      d.monto_unitario = Number.isFinite(nm) && nm >= 0 ? round2(nm) : 0.01;
+      d.monto_unitario = Number.isFinite(nm) && nm > 0 ? round2(nm) : 0.01;
     }
-    updateRowTotals(uid);
+    updateRowAllCells(uid);
+    markDirty();
   }
   function displayValue(d, field) {
     if (field === "concepto") return d.concepto || "";
@@ -1307,18 +1548,15 @@ ${hasInlineEdit ? `<script>
     inp.style.cssText = "width:100%;box-sizing:border-box;padding:2px 4px;font-size:inherit;font-family:inherit;border:2px solid #7c5cbf;border-radius:4px;background:#fffde7;";
     td.textContent = "";
     td.appendChild(inp);
-    inp.focus();
-    inp.select();
+    inp.focus(); inp.select();
     var committed = false;
     function commit() {
-      if (committed) return;
-      committed = true;
+      if (committed) return; committed = true;
       commitEdit(uid, field, inp.value);
       td.textContent = displayValue(getDraft(uid), field);
     }
     function cancel() {
-      if (committed) return;
-      committed = true;
+      if (committed) return; committed = true;
       td.textContent = displayValue(d, field);
     }
     inp.addEventListener("blur", commit);
@@ -1344,34 +1582,28 @@ ${hasInlineEdit ? `<script>
       }
     })(trs[ri]);
   }
+
+  // ── Botón "Guardar cambios" barra superior ──
   var btnGuardar = document.getElementById("__btnGuardar");
   if (btnGuardar) {
     btnGuardar.addEventListener("click", function () {
       var btn = this;
-      if (!window.opener || typeof window.opener.__presupuestoSaveItems !== "function") {
-        alert("No se puede guardar: la ventana de Presupuesto ya no está disponible.\\nCierra esta ventana y ábrela de nuevo desde el módulo Presupuesto.");
-        return;
-      }
       btn.disabled = true;
-      btn.textContent = "Guardando…";
-      var finalItems = RAW.map(function (it) {
-        if (!it || !it.uid || !draftMap[it.uid]) return it;
-        return Object.assign({}, it, draftMap[it.uid]);
-      });
-      Promise.resolve(window.opener.__presupuestoSaveItems(finalItems)).then(function () {
-        isDirty = false;
-        var badge = document.getElementById("__dirtyBadge");
-        if (badge) badge.style.display = "none";
-        btn.textContent = "Cambios guardados ✓";
-        btn.disabled = false;
-        setTimeout(function () { if (!isDirty) btn.textContent = "Guardar cambios"; }, 2500);
-      }).catch(function (err) {
-        btn.textContent = "Guardar cambios";
-        btn.disabled = false;
-        alert("Error al guardar: " + ((err && err.message) ? err.message : String(err)));
+      btn.textContent = "Guardando\\u2026";
+      doSaveItems(function (err) {
+        if (err) {
+          btn.disabled = false;
+          btn.textContent = "Guardar cambios";
+          alert("Error al guardar: " + ((err && err.message) ? err.message : String(err)));
+        } else {
+          btn.textContent = "Cambios guardados \\u2713";
+          btn.disabled = false;
+          setTimeout(function () { if (!isDirty) btn.textContent = "Guardar cambios"; }, 2500);
+        }
       });
     });
   }
+
   window.addEventListener("beforeunload", function (e) {
     if (!isDirty) return;
     e.preventDefault();
@@ -1388,8 +1620,8 @@ ${hasInlineEdit ? `<script>
 /** =========================
  *  API pública (vista previa / imprimir)
  *  ========================= */
-// Solo exporta el Desglose en landscape
-export async function exportarPresupuestoPDF({ choice = "2" } = {}) {
+// Abre el Desglose en landscape (vista previa con botón imprimir)
+export async function exportarPresupuestoPDF() {
   let items = await readItemsFromServerState();
 
   // Also load the full raw items (with all fields) for inline editing in the preview

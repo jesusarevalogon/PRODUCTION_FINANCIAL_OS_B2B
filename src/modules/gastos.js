@@ -15,7 +15,8 @@
 import { getExpenses, createExpense, deleteExpense } from "../services/gastosService.js";
 import { loadModuleState } from "../services/stateService.js";
 import { buildStoragePath, uploadFile, createSignedUrl } from "../services/storageService.js";
-import { STORAGE_BUCKET } from "../utils/constants.js";
+import { maybeCompressPdfFile } from "../services/pdfCompressService.js";
+import { STORAGE_BUCKET, COMPROBANTE_MAX_MB } from "../utils/constants.js";
 
 const CUENTAS_DEFAULT = [
   "DESARROLLO",
@@ -181,15 +182,22 @@ export function renderGastosView() {
                 <input id="gastoResponsable" type="text" placeholder="Nombre del responsable" />
               </label>
 
-              <label style="grid-column:1/-1;">
-                <span>Comprobante (PDF / imagen)</span>
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px;">
-                  <input id="gastoComprobante" type="file"
-                         accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-                         style="flex:1;min-width:0;" />
-                  <span id="gastoComprobanteLabel" class="muted" style="font-size:11px;"></span>
+              <div style="grid-column:1/-1;">
+                <span style="font-size:13px;font-weight:600;display:block;margin-bottom:6px;">Comprobante <span class="muted" style="font-weight:400;font-size:11px;">(PDF, imagen — máx. 10MB)</span></span>
+                <!-- inputs ocultos -->
+                <input id="gastoReceiptCamera" type="file" accept="image/*" capture="environment" style="display:none;" />
+                <input id="gastoReceiptUpload" type="file" accept="image/*,application/pdf,image/heic,image/heif" style="display:none;" />
+                <!-- botones de acción -->
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                  <button type="button" id="gastoBtnCamera" class="btn btn-ghost btn-xs">📷 Tomar foto</button>
+                  <button type="button" id="gastoBtnUpload" class="btn btn-ghost btn-xs">📎 Subir archivo</button>
+                  <button type="button" id="gastoBtnQuitarComp" class="btn btn-danger btn-xs" style="display:none;">✕ Quitar</button>
                 </div>
-              </label>
+                <!-- preview del archivo -->
+                <div id="gastoComprobantePreview" style="display:none;margin-top:8px;"></div>
+                <!-- warning de upload fallido -->
+                <p id="gastoUploadWarn" style="display:none;color:#f59e0b;font-size:12px;margin:4px 0 0;"></p>
+              </div>
             </div>
             <p id="gastoValidMsg" class="error" style="display:none;margin-top:10px;"></p>
             <p id="gastoUploadMsg" class="muted" style="display:none;margin-top:6px;font-size:12px;"></p>
@@ -247,14 +255,20 @@ export async function bindGastosEvents() {
   const inpMonto       = document.getElementById("gastoMonto");
   const inpProveedor   = document.getElementById("gastoProveedor");
   const inpResponsable = document.getElementById("gastoResponsable");
-  const inpComprobante = document.getElementById("gastoComprobante");
-  const comprobanteLabel = document.getElementById("gastoComprobanteLabel");
-  const validMsg       = document.getElementById("gastoValidMsg");
-  const uploadMsg      = document.getElementById("gastoUploadMsg");
+  const inpReceiptCamera   = document.getElementById("gastoReceiptCamera");
+  const inpReceiptUpload   = document.getElementById("gastoReceiptUpload");
+  const btnCamera          = document.getElementById("gastoBtnCamera");
+  const btnUpload          = document.getElementById("gastoBtnUpload");
+  const btnQuitarComp      = document.getElementById("gastoBtnQuitarComp");
+  const comprobantePreview = document.getElementById("gastoComprobantePreview");
+  const uploadWarn         = document.getElementById("gastoUploadWarn");
+  const validMsg           = document.getElementById("gastoValidMsg");
+  const uploadMsg          = document.getElementById("gastoUploadMsg");
 
   let allExpenses = [];
   let cuentas = [];
   let partidas = [];
+  let pendingFile = null;
 
   // ── helpers ──
   function showMsg(text, isError = false) {
@@ -396,11 +410,48 @@ export async function bindGastosEvents() {
     }
   });
 
-  // Mostrar nombre del archivo seleccionado
-  inpComprobante.addEventListener("change", () => {
-    const file = inpComprobante.files?.[0];
-    comprobanteLabel.textContent = file ? file.name : "";
-  });
+  // ── Comprobante: helpers ──
+  function showComprobantePreview(file) {
+    btnQuitarComp.style.display = "inline-flex";
+    uploadWarn.style.display = "none";
+    if (file.type.startsWith("image/")) {
+      const url = URL.createObjectURL(file);
+      comprobantePreview.innerHTML = `<img src="${escapeHtml(url)}" alt="preview" style="max-height:100px;max-width:100%;border-radius:6px;border:1px solid rgba(0,0,0,.15);" />`;
+    } else {
+      comprobantePreview.innerHTML = `<span style="font-size:12px;">📄 ${escapeHtml(file.name)}</span>`;
+    }
+    comprobantePreview.style.display = "block";
+  }
+
+  function clearReceipt() {
+    pendingFile = null;
+    inpReceiptCamera.value = "";
+    inpReceiptUpload.value = "";
+    comprobantePreview.style.display = "none";
+    comprobantePreview.innerHTML = "";
+    btnQuitarComp.style.display = "none";
+    uploadWarn.style.display = "none";
+  }
+
+  function handleFileSelected(file) {
+    if (!file) return;
+    if (file.size > COMPROBANTE_MAX_MB * 1024 * 1024) {
+      uploadWarn.textContent = `El archivo excede el límite de ${COMPROBANTE_MAX_MB}MB.`;
+      uploadWarn.style.display = "block";
+      inpReceiptCamera.value = "";
+      inpReceiptUpload.value = "";
+      return;
+    }
+    pendingFile = file;
+    showComprobantePreview(file);
+  }
+
+  // Botones de comprobante
+  btnCamera.addEventListener("click", () => inpReceiptCamera.click());
+  btnUpload.addEventListener("click", () => inpReceiptUpload.click());
+  btnQuitarComp.addEventListener("click", clearReceipt);
+  inpReceiptCamera.addEventListener("change", () => handleFileSelected(inpReceiptCamera.files?.[0]));
+  inpReceiptUpload.addEventListener("change", () => handleFileSelected(inpReceiptUpload.files?.[0]));
 
   // ── Filtros ──
   searchEl.addEventListener("input", () => {
@@ -425,9 +476,7 @@ export async function bindGastosEvents() {
     inpProveedor.value = "";
     inpResponsable.value = "";
     selPartida.value = "";
-    comprobanteLabel.textContent = "";
-    // Reset file input
-    inpComprobante.value = "";
+    clearReceipt();
     backdrop.style.display = "flex";
     inpMonto.focus();
   }
@@ -469,33 +518,49 @@ export async function bindGastosEvents() {
       // ── Subir comprobante si hay archivo ──
       let comprobante_path = null;
       let comprobante_name = null;
-      const comprobanteFile = inpComprobante.files?.[0];
+      uploadWarn.style.display = "none";
 
-      if (comprobanteFile) {
+      if (pendingFile) {
         uploadMsg.textContent = "Subiendo comprobante…";
         uploadMsg.style.display = "block";
+        try {
+          let fileToUpload = pendingFile;
 
-        const userId = window.appState.user.id;
-        const projectId = window.appState.project.id;
-        const path = buildStoragePath({
-          userId,
-          projectId,
-          area: "gastos",
-          docKey: "comprobantes",
-          filename: comprobanteFile.name,
-        });
+          // Comprimir PDF si aplica (no bloquea si falla)
+          if (pendingFile.type === "application/pdf") {
+            try {
+              const { file: compressed } = await maybeCompressPdfFile(pendingFile);
+              fileToUpload = compressed;
+            } catch { /* usar original */ }
+          }
 
-        await uploadFile({
-          file: comprobanteFile,
-          path,
-          bucket: STORAGE_BUCKET,
-          upsert: false,
-          contentType: comprobanteFile.type || undefined,
-        });
+          const userId = window.appState.user.id;
+          const projectId = window.appState.project.id;
+          const path = buildStoragePath({
+            userId,
+            projectId,
+            area: "gastos",
+            docKey: "comprobantes",
+            filename: fileToUpload.name,
+          });
 
-        comprobante_path = path;
-        comprobante_name = comprobanteFile.name;
-        uploadMsg.style.display = "none";
+          await uploadFile({
+            file: fileToUpload,
+            path,
+            bucket: STORAGE_BUCKET,
+            upsert: false,
+            contentType: fileToUpload.type || undefined,
+          });
+
+          comprobante_path = path;
+          comprobante_name = pendingFile.name;
+          uploadMsg.style.display = "none";
+        } catch {
+          // Upload falló → guardar gasto sin comprobante y avisar
+          uploadMsg.style.display = "none";
+          uploadWarn.textContent = "⚠ No se pudo subir el comprobante. El gasto se guardará sin él.";
+          uploadWarn.style.display = "block";
+        }
       }
 
       await createExpense({

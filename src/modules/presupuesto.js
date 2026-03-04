@@ -23,9 +23,8 @@ import { loadModuleState, saveModuleState } from "../services/stateService.js";
   la vista previa de Presupuesto.
 ========================================================= */
 if (typeof window !== "undefined") {
-  // Llamada desde Documentación u otros módulos: por default muestra Ambos (resumen + desglose)
-  window.openPresupuestoPreview = function (choice = "3") {
-    exportarPresupuestoPDF({ choice }).catch((e) => alert(e?.message || String(e)));
+  window.openPresupuestoPreview = function () {
+    exportarPresupuestoPDF().catch((e) => alert(e?.message || String(e)));
   };
 }
 
@@ -280,37 +279,6 @@ export function renderPresupuestoView() {
       </div>
     </div>
 
-    <!-- Modal Vista Previa PDF -->
-    <div id="bgPdfModalBackdrop" class="modal-backdrop" style="display:none;">
-      <div class="modal" style="max-width:380px;">
-        <div class="modal-header">
-          <h3>Vista previa del Presupuesto</h3>
-          <button id="bgPdfModalClose" class="modal-close" aria-label="Cerrar">✕</button>
-        </div>
-        <div class="modal-body">
-          <p class="muted" style="margin:0 0 14px;">Selecciona qué sección deseas abrir:</p>
-          <div style="display:flex; flex-direction:column; gap:12px;">
-            <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
-              <input type="radio" name="bgPdfChoice" value="3" checked />
-              <span>Ambos — Resumen + Desglose</span>
-            </label>
-            <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
-              <input type="radio" name="bgPdfChoice" value="1" />
-              <span>Solo Resumen (1 hoja portrait)</span>
-            </label>
-            <label style="display:flex; align-items:center; gap:10px; cursor:pointer;">
-              <input type="radio" name="bgPdfChoice" value="2" />
-              <span>Solo Desglose (landscape)</span>
-            </label>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button id="bgPdfModalCancel" class="btn btn-light">Cancelar</button>
-          <button id="bgPdfModalConfirm" class="btn btn-primary">Abrir vista previa</button>
-        </div>
-      </div>
-    </div>
-
     <!-- Modal Carga Masiva -->
     <div id="bgBulkBackdrop" class="modal-backdrop" style="display:none;">
       <div class="modal" style="max-width: 1080px; display:flex; flex-direction:column; max-height: 88vh;">
@@ -430,10 +398,6 @@ export async function bindPresupuestoEvents() {
   const plazoDiasWrap = document.getElementById("bgPlazoDiasWrap");
 
   // Modal PDF
-  const pdfModalBackdrop = document.getElementById("bgPdfModalBackdrop");
-  const pdfModalClose = document.getElementById("bgPdfModalClose");
-  const pdfModalCancel = document.getElementById("bgPdfModalCancel");
-  const pdfModalConfirm = document.getElementById("bgPdfModalConfirm");
 
   // Modal carga masiva
   const bulkBackdrop = document.getElementById("bgBulkBackdrop");
@@ -554,22 +518,9 @@ export async function bindPresupuestoEvents() {
   btnEliminar.addEventListener("click", deleteSelected);
   btnDescargar.addEventListener("click", downloadCSV);
 
-  btnExportarPDF.addEventListener("click", () => {
-    // Resetear radio a "Ambos" y abrir modal de elección
-    const radioDefault = pdfModalBackdrop.querySelector("input[name=bgPdfChoice][value='3']");
-    if (radioDefault) radioDefault.checked = true;
-    pdfModalBackdrop.style.display = "flex";
-  });
-  pdfModalClose.addEventListener("click", () => { pdfModalBackdrop.style.display = "none"; });
-  pdfModalCancel.addEventListener("click", () => { pdfModalBackdrop.style.display = "none"; });
-  pdfModalBackdrop.addEventListener("click", (e) => {
-    if (e.target === pdfModalBackdrop) pdfModalBackdrop.style.display = "none";
-  });
-  pdfModalConfirm.addEventListener("click", async () => {
-    const choice = pdfModalBackdrop.querySelector("input[name=bgPdfChoice]:checked")?.value || "3";
-    pdfModalBackdrop.style.display = "none";
+  btnExportarPDF.addEventListener("click", async () => {
     try {
-      await exportarPresupuestoPDF({ choice });
+      await exportarPresupuestoPDF();
     } catch (e) {
       alert(e?.message || String(e));
     }
