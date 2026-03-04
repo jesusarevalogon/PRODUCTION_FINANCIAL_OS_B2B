@@ -589,6 +589,8 @@ async function readItemsFromServerState() {
         subtotal,
         iva_monto,
         total,
+        plazo_tipo: it?.plazo_tipo ?? null,
+        plazo_cantidad: it?.plazo_cantidad ?? null,
       };
     });
 
@@ -649,7 +651,7 @@ function readItemsFromLocalStorage() {
       return { __error: `Registro #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
     }
 
-    return { etapa, concepto, cuentaNombre, account, entidad, payment_method, facturado, monto_unitario, cantidad, subtotal, iva_monto, total };
+    return { etapa, concepto, cuentaNombre, account, entidad, payment_method, facturado, monto_unitario, cantidad, subtotal, iva_monto, total, plazo_tipo: it?.plazo_tipo ?? null, plazo_cantidad: it?.plazo_cantidad ?? null };
   });
 
   const errors = items.filter((x) => x && x.__error).map((x) => x.__error);
@@ -690,7 +692,7 @@ function readItemsFromDOM() {
         return { __error: `Registro #${i + 1}: números inválidos en "${concepto}" (${cuentaNombre}).` };
       }
 
-      return { etapa, concepto, cuentaNombre, account, entidad, payment_method, facturado, monto_unitario, cantidad, subtotal, iva_monto, total };
+      return { etapa, concepto, cuentaNombre, account, entidad, payment_method, facturado, monto_unitario, cantidad, subtotal, iva_monto, total, plazo_tipo: null, plazo_cantidad: null };
     });
 
     const errorsA = itemsA.filter((x) => x && x.__error).map((x) => x.__error);
@@ -853,6 +855,8 @@ function readItemsFromDOM() {
       subtotal,
       iva_monto,
       total,
+      plazo_tipo: null,
+      plazo_cantidad: null,
     };
   });
 
@@ -949,19 +953,11 @@ function aportacionesFrom(row) {
  *  ========================= */
 function buildPrintableHTML(rows, projectName, opts = {}) {
   const showActions = opts.showActions !== false;
-  const splitPages = opts.splitPages === true;
-  const printResumenOnly = opts.printResumenOnly === true;
-  const printDesgloseOnly = opts.printDesgloseOnly === true;
   const rawItems = Array.isArray(opts.rawItems) ? opts.rawItems : [];
   const hasInlineEdit = rawItems.length > 0 && showActions;
   function safeJsonStr(obj) {
     return JSON.stringify(obj).replace(/<\//g, "<\\/");
   }
-
-  const summaryEtapas = buildBudgetSummaryEtapasFromRows(rows, {
-    titulo: projectName || "Proyecto",
-  });
-  const resumen = buildResumenHTML(summaryEtapas, { dense: true });
 
   const grouped = new Map();
   const etapaTotals = new Map();
@@ -1003,7 +999,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   const renderEtapaBanner = (etapa) => {
     const c = COLORS.etapa[etapa];
     return `<tr class="etapa-banner" style="background:${c.bg}; color:${c.fg};">
-      <td colspan="10">${labelEtapa(etapa)}</td>
+      <td colspan="12">${labelEtapa(etapa)}</td>
     </tr>`;
   };
 
@@ -1012,7 +1008,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
     const c = COLORS.cuenta[key];
     return `<tr class="cuenta-group" style="background:${c.bg}; color:${c.fg};">
       <td class="code">${numeroCuenta}</td>
-      <td class="desc" colspan="9">${escapeHtml(cuentaNombre)}</td>
+      <td class="desc" colspan="11">${escapeHtml(cuentaNombre)}</td>
     </tr>`;
   };
 
@@ -1022,6 +1018,8 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
       <td class="code"></td>
       <td class="desc">SUBTOTALES SUBCUENTA ${numeroCuenta}</td>
       <td class="tipo"></td>
+      <td class="pago"></td>
+      <td class="dias"></td>
       <td class="num">${acc.cantidad}</td>
       <td class="num">${money(acc.monto_unitario)}</td>
       <td class="num">${money(acc.subtotal)}</td>
@@ -1036,7 +1034,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
     const t = etapaTotals.get(etapa);
     return `<tr class="grand">
       <td class="code"></td>
-      <td class="desc" colspan="3">GRAN TOTAL ${labelEtapa(etapa)}</td>
+      <td class="desc" colspan="5">GRAN TOTAL ${labelEtapa(etapa)}</td>
       <td class="num">${money(t.subtotal)}</td>
       <td class="num">${money(t.iva_monto)}</td>
       <td class="num total-highlight">${money(t.total)}</td>
@@ -1048,7 +1046,7 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   const renderGrandTotal = () => {
     return `<tr class="grand grand-final">
       <td class="code"></td>
-      <td class="desc" colspan="3">GRAN TOTAL</td>
+      <td class="desc" colspan="5">GRAN TOTAL</td>
       <td class="num">${money(grand.subtotal)}</td>
       <td class="num">${money(grand.iva_monto)}</td>
       <td class="num total-highlight">${money(grand.total)}</td>
@@ -1088,11 +1086,15 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
         acc.especie += ap.especie;
 
         const uidAttr = r.uid ? ` data-uid="${escapeHtml(r.uid)}"` : "";
+        const tipoPago = (r.plazo_tipo === "dias") ? "Por día" : "Por proyecto";
+        const dias = (r.plazo_tipo === "dias") ? (Number(r.plazo_cantidad) || 1) : "—";
         bodyRows += `
           <tr class="item"${uidAttr}>
             <td class="code">${r.subcuenta}</td>
             <td class="desc editable-cell" data-field="concepto">${escapeHtml(r.concepto)}</td>
             <td class="tipo">${r.facturado ? "Con factura" : "Sin factura"}</td>
+            <td class="pago">${tipoPago}</td>
+            <td class="dias">${dias}</td>
             <td class="num editable-cell" data-field="cantidad">${r.cantidad}</td>
             <td class="num editable-cell" data-field="monto_unitario">${money(r.monto_unitario)}</td>
             <td class="num" data-field="subtotal">${money(r.subtotal)}</td>
@@ -1149,8 +1151,10 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
 
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.code { text-align: center; width: 74px; font-weight: 800; }
-  td.desc { width: 430px; }
-  td.tipo { text-align: center; width: 95px; font-weight: 800; }
+  td.desc { width: 320px; }
+  td.tipo { text-align: center; width: 88px; font-weight: 800; }
+  td.pago { text-align: center; width: 70px; font-weight: 800; }
+  td.dias { text-align: center; width: 38px; }
 
   .etapa-banner td { text-align: center; font-weight: 900; letter-spacing: .5px; }
   .cuenta-group td { font-weight: 900; }
@@ -1167,30 +1171,10 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
   @media print { .editable-cell { cursor: default; } .editable-cell:hover { outline: none; } }
   #__dirtyBadge { background:#f59e0b; color:#000; padding:6px 12px; border-radius:8px; font-weight:800; font-size:12px; }
 
-  /* ✅ Separación para export bytes (cuando splitPages) */
-  .pdf-resumen{ page-break-after: always; break-after: page; }
-
-  /* ✅ RESUMEN CSS */
-  ${resumen.css}
-
-  /* ✅ Print (preview): imprimir solo RESUMEN, 1 página portrait */
-@media print {
-  ${printResumenOnly ? `
-  @page { size: A4 portrait; margin: 10mm; }
-  .pdf-desglose { display: none !important; }
-  .pdf-resumen { page-break-after: auto !important; break-after: auto !important; }
-  body { background:#fff; }
-  ` : ``}
-
-  ${printDesgloseOnly ? `
-  @page { size: A4 landscape; margin: 8mm; }
-  .pdf-resumen { display: none !important; }
-  body { background:#fff; }
-  ` : ``}
-}
+  @media print { body { background:#fff; } }
 </style>
 </head>
-<body class="${printResumenOnly ? "print-resumen-only" : ""}">
+<body>
   ${
     showActions
       ? `
@@ -1203,9 +1187,6 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
       : ``
   }
 
-  ${splitPages ? `<div class="pdf-resumen">${resumen.header}</div>` : resumen.header}
-
-  ${splitPages ? `<div class="pdf-desglose">` : ``}
   <div class="title">PRESUPUESTO DESGLOSADO</div>
   <div class="note">${escapeHtml(projectName || "Proyecto")}</div>
 
@@ -1215,6 +1196,8 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
         <th rowspan="2">CUENTA Y SUBCUENTA</th>
         <th rowspan="2">DESCRIPCIÓN</th>
         <th rowspan="2">FACTURA</th>
+        <th rowspan="2">TIPO DE PAGO</th>
+        <th rowspan="2">DÍAS</th>
         <th rowspan="2">CANT.</th>
         <th rowspan="2">COSTO UNIDAD</th>
         <th rowspan="2">SUBTOTAL</th>
@@ -1231,7 +1214,6 @@ function buildPrintableHTML(rows, projectName, opts = {}) {
       ${bodyRows}
     </tbody>
   </table>
-  ${splitPages ? `</div>` : ``}
 ${hasInlineEdit ? `<script>
 (function () {
   "use strict";
@@ -1272,13 +1254,13 @@ ${hasInlineEdit ? `<script>
     var tr = document.querySelector("tr[data-uid=\\"" + uid + "\\"]");
     if (!tr) return;
     var tds = tr.querySelectorAll("td");
-    // 0=code 1=concepto 2=facturado 3=cantidad 4=monto_unitario 5=subtotal 6=iva_monto 7=total 8=efectivo 9=especie
-    if (tds[5]) tds[5].textContent = money(d.subtotal);
-    if (tds[6]) tds[6].textContent = money(d.iva_monto);
-    if (tds[7]) tds[7].textContent = money(d.total);
+    // 0=code 1=concepto 2=facturado 3=tipoPago 4=dias 5=cantidad 6=monto_unitario 7=subtotal 8=iva_monto 9=total 10=efectivo 11=especie
+    if (tds[7]) tds[7].textContent = money(d.subtotal);
+    if (tds[8]) tds[8].textContent = money(d.iva_monto);
+    if (tds[9]) tds[9].textContent = money(d.total);
     var pm = d.payment_method || "";
-    if (tds[8]) tds[8].textContent = pm !== "especie_productora" ? money(d.total) : "";
-    if (tds[9]) tds[9].textContent = pm === "especie_productora" ? money(d.total) : "";
+    if (tds[10]) tds[10].textContent = pm !== "especie_productora" ? money(d.total) : "";
+    if (tds[11]) tds[11].textContent = pm === "especie_productora" ? money(d.total) : "";
     markDirty();
   }
   function markDirty() {
@@ -1351,7 +1333,7 @@ ${hasInlineEdit ? `<script>
       var uid = tr.getAttribute("data-uid");
       if (!uid || !byUid[uid]) return;
       var tds = tr.querySelectorAll("td");
-      var defs = [{ idx: 1, field: "concepto" }, { idx: 3, field: "cantidad" }, { idx: 4, field: "monto_unitario" }];
+      var defs = [{ idx: 1, field: "concepto" }, { idx: 5, field: "cantidad" }, { idx: 6, field: "monto_unitario" }];
       for (var ei = 0; ei < defs.length; ei++) {
         (function (def) {
           var td = tds[def.idx];
@@ -1406,8 +1388,8 @@ ${hasInlineEdit ? `<script>
 /** =========================
  *  API pública (vista previa / imprimir)
  *  ========================= */
-// choice: "1" = Resumen | "2" = Desglose | "3" = Ambos (default)
-export async function exportarPresupuestoPDF({ choice = "3" } = {}) {
+// Solo exporta el Desglose en landscape
+export async function exportarPresupuestoPDF({ choice = "2" } = {}) {
   let items = await readItemsFromServerState();
 
   // Also load the full raw items (with all fields) for inline editing in the preview
@@ -1448,16 +1430,7 @@ export async function exportarPresupuestoPDF({ choice = "3" } = {}) {
     document.querySelector("[data-project-name]")?.getAttribute("data-project-name") ||
     "Proyecto";
 
-  const safeChoice = ["1", "2", "3"].includes(String(choice)) ? String(choice) : "3";
-
-  const opts =
-    safeChoice === "1"
-      ? { showActions: true, splitPages: true, printResumenOnly: true, rawItems }
-      : safeChoice === "2"
-      ? { showActions: true, splitPages: true, printDesgloseOnly: true, rawItems }
-      : { showActions: true, splitPages: true, rawItems };
-
-  const printable = buildPrintableHTML(rows, projectName, opts);
+  const printable = buildPrintableHTML(rows, projectName, { showActions: true, rawItems });
 
   const w = window.open("", "_blank");
   if (!w) throw new Error("No se pudo abrir la ventana de vista previa. Permite popups para esta página.");
@@ -1505,8 +1478,8 @@ export async function exportarPresupuestoPdfBytes({ projectName } = {}) {
     document.querySelector("[data-project-name]")?.getAttribute("data-project-name") ||
     "Proyecto";
 
-  // ✅ Export final: sin botón + resumen en portrait separado
-  const html = buildPrintableHTML(rows, pName, { showActions: false, splitPages: true });
+  // Solo desglose landscape
+  const html = buildPrintableHTML(rows, pName, { showActions: false });
   return await htmlToPdfBytes(html);
 }
 
