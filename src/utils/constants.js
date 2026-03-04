@@ -10,14 +10,85 @@ export const STORAGE_BUCKET = "uploads";
 export const STORAGE_ROOT = ""; // e.g. "app" si luego quieres /app/...
 
 // ===============================
+// Storage Buckets
+// ===============================
+export const STORAGE_BUCKET_ATTACHMENTS = "project-attachments"; // privado, por entidad
+export const STORAGE_BUCKET_EXPORTS     = "project-exports";     // privado, PDFs/exports
+
+// ===============================
 // Module Keys (project_state.module_key)
 // ===============================
 export const MODULE_KEYS = Object.freeze({
   DOCUMENTACION: "documentacion",
-  PRESUPUESTO: "presupuesto",
-  RUTA_CRITICA: "ruta_critica",
-  ENTREGA: "entrega",
+  PRESUPUESTO:   "presupuesto",
+  RUTA_CRITICA:  "ruta_critica",
+  ENTREGA:       "entrega",
+  // Nuevos módulos suite audiovisual
+  RODAJE:        "rodaje",
+  RECURSOS:      "recursos",
+  POST:          "post",
+  DOCUMENTOS:    "documentos",
 });
+
+// ===============================
+// Project member roles
+// ===============================
+export const PROJECT_ROLES = Object.freeze([
+  "admin",
+  "producer",
+  "accounting",
+  "post",
+  "crew_viewer",
+  "runner",
+]);
+
+// ===============================
+// Status enums
+// ===============================
+export const CALL_SHEET_STATUS = Object.freeze({
+  DRAFT:     "draft",
+  REVIEW:    "review",
+  PUBLISHED: "published",
+});
+
+export const PR_STATUS = Object.freeze({
+  DRAFT:     "draft",
+  SUBMITTED: "submitted",
+  APPROVED:  "approved",
+  REJECTED:  "rejected",
+  CANCELLED: "cancelled",
+});
+
+export const PO_STATUS = Object.freeze({
+  DRAFT:     "draft",
+  APPROVED:  "approved",
+  ISSUED:    "issued",
+  RECEIVED:  "received",
+  INVOICED:  "invoiced",
+  PAID:      "paid",
+  CANCELLED: "cancelled",
+});
+
+export const DELIVERABLE_STATUS = Object.freeze({
+  TODO:         "todo",
+  IN_PROGRESS:  "in_progress",
+  NEEDS_REVIEW: "needs_review",
+  APPROVED:     "approved",
+  DELIVERED:    "delivered",
+});
+
+export const KANBAN_STATUS = Object.freeze({
+  TODO:  "todo",
+  DOING: "doing",
+  DONE:  "done",
+});
+
+export const STAGE_NAMES = Object.freeze(["edit", "color", "audio", "vfx", "qc", "final"]);
+
+export const DOCUMENT_TYPES = Object.freeze([
+  "script", "budget", "schedule", "call_sheet", "release",
+  "insurance", "contract", "guide", "other",
+]);
 
 // ===============================
 // LocalStorage keys (fallback / compat)

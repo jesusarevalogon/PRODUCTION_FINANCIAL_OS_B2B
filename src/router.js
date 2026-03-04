@@ -9,6 +9,8 @@ export function initRouter(onRoute) {
 }
 
 export function navigate(route) {
-  // route: "" | "proyectos" | "presupuesto" | "gastos" | "ejecucion" | "ruta" | "documentacion" | "entrega"
+  // route: "" | "proyectos" | "presupuesto" | "gastos" | "ejecucion" |
+  //        "ruta" | "documentacion" | "entrega" |
+  //        "rodaje" | "recursos" | "post" | "documentos"
   window.location.hash = route ? `#${route}` : "";
 }

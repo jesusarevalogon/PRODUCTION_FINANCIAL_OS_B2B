@@ -71,11 +71,15 @@ function renderTopBar(activeRoute = "") {
   const email = window.appState.user?.email || "";
 
   const navLinks = [
-    { route: "", label: "Home" },
-    { route: "proyectos", label: "Proyectos" },
+    { route: "",            label: "Home" },
+    { route: "proyectos",   label: "Proyectos" },
     { route: "presupuesto", label: "Presupuesto" },
-    { route: "gastos", label: "Gastos" },
-    { route: "ejecucion", label: "Ejecución" },
+    { route: "gastos",      label: "Gastos" },
+    { route: "ejecucion",   label: "Ejecución" },
+    { route: "rodaje",      label: "Rodaje" },
+    { route: "recursos",    label: "Recursos" },
+    { route: "post",        label: "Post" },
+    { route: "documentos",  label: "Documentos" },
   ];
 
   const navHtml = navLinks
@@ -569,6 +573,62 @@ async function renderDashboard(route) {
     } catch (e) {
       console.error("[ejecucion bind]", e);
     }
+    return;
+  }
+
+  // ─ Rodaje ─
+  if (currentRoute === "rodaje") {
+    let mod;
+    try { mod = await import("./modules/rodaje.js"); } catch (e) { _renderModuleError(topbarHtml, "rodaje.js", e); return; }
+    if (!window.appState.project?.id) {
+      app.innerHTML = `${topbarHtml}<div class="container" style="padding-top:24px;"><div class="card"><h2>Sin proyecto activo</h2><p class="muted">Selecciona un proyecto primero.</p><button class="btn btn-primary" onclick="window.navigateTo('proyectos')">Ir a Proyectos</button></div></div>`;
+      bindTopBarEvents("rodaje"); return;
+    }
+    app.innerHTML = `${topbarHtml}${mod.renderRodajeView()}`;
+    bindTopBarEvents("rodaje");
+    try { await mod.bindRodajeEvents(); } catch (e) { console.error("[rodaje bind]", e); }
+    return;
+  }
+
+  // ─ Recursos ─
+  if (currentRoute === "recursos") {
+    let mod;
+    try { mod = await import("./modules/recursos.js"); } catch (e) { _renderModuleError(topbarHtml, "recursos.js", e); return; }
+    if (!window.appState.project?.id) {
+      app.innerHTML = `${topbarHtml}<div class="container" style="padding-top:24px;"><div class="card"><h2>Sin proyecto activo</h2><p class="muted">Selecciona un proyecto primero.</p><button class="btn btn-primary" onclick="window.navigateTo('proyectos')">Ir a Proyectos</button></div></div>`;
+      bindTopBarEvents("recursos"); return;
+    }
+    app.innerHTML = `${topbarHtml}${mod.renderRecursosView()}`;
+    bindTopBarEvents("recursos");
+    try { await mod.bindRecursosEvents(); } catch (e) { console.error("[recursos bind]", e); }
+    return;
+  }
+
+  // ─ Post ─
+  if (currentRoute === "post") {
+    let mod;
+    try { mod = await import("./modules/post.js"); } catch (e) { _renderModuleError(topbarHtml, "post.js", e); return; }
+    if (!window.appState.project?.id) {
+      app.innerHTML = `${topbarHtml}<div class="container" style="padding-top:24px;"><div class="card"><h2>Sin proyecto activo</h2><p class="muted">Selecciona un proyecto primero.</p><button class="btn btn-primary" onclick="window.navigateTo('proyectos')">Ir a Proyectos</button></div></div>`;
+      bindTopBarEvents("post"); return;
+    }
+    app.innerHTML = `${topbarHtml}${mod.renderPostView()}`;
+    bindTopBarEvents("post");
+    try { await mod.bindPostEvents(); } catch (e) { console.error("[post bind]", e); }
+    return;
+  }
+
+  // ─ Documentos ─
+  if (currentRoute === "documentos") {
+    let mod;
+    try { mod = await import("./modules/documentos.js"); } catch (e) { _renderModuleError(topbarHtml, "documentos.js", e); return; }
+    if (!window.appState.project?.id) {
+      app.innerHTML = `${topbarHtml}<div class="container" style="padding-top:24px;"><div class="card"><h2>Sin proyecto activo</h2><p class="muted">Selecciona un proyecto primero.</p><button class="btn btn-primary" onclick="window.navigateTo('proyectos')">Ir a Proyectos</button></div></div>`;
+      bindTopBarEvents("documentos"); return;
+    }
+    app.innerHTML = `${topbarHtml}${mod.renderDocumentosView()}`;
+    bindTopBarEvents("documentos");
+    try { await mod.bindDocumentosEvents(); } catch (e) { console.error("[documentos bind]", e); }
     return;
   }
 

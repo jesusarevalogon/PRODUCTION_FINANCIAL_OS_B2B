@@ -266,3 +266,142 @@ export async function downloadAttachmentBlob({ userId, projectId, moduleKey, doc
 
 // Mantengo noop por compatibilidad
 export function noop() {}
+
+// =========================================================
+// API V2 — attachments TABLE (transversal por entidad)
+// Usa el bucket 'project-attachments' y la tabla `attachments`.
+// =========================================================
+
+const ATTACHMENTS_BUCKET = "project-attachments";
+
+function requireSupabase() {
+  if (!supabase) throw new Error("Supabase no inicializado.");
+}
+function getProjectId() {
+  const id = window?.appState?.project?.id;
+  if (!id) throw new Error("No hay proyecto activo.");
+  return id;
+}
+function nowStamp() { return Date.now(); }
+function safeFileName(name) {
+  return String(name || "archivo")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "_")
+    .replace(/\s+/g, "_")
+    .slice(0, 180);
+}
+
+/**
+ * Lista adjuntos de una entidad específica.
+ * @param {string} module   - 'expenses' | 'call_sheets' | 'documents' | etc.
+ * @param {string} entity_id
+ * @param {string} [projectId]
+ */
+export async function listAttachments({ module, entity_id, projectId } = {}) {
+  requireSupabase();
+  const pid = projectId || getProjectId();
+  const { data, error } = await supabase
+    .from("attachments")
+    .select("*")
+    .eq("project_id", pid)
+    .eq("module", module)
+    .eq("entity_id", entity_id)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+/**
+ * Sube un archivo y lo registra en la tabla attachments.
+ * Si falla el INSERT, borra el objeto del storage (best-effort).
+ *
+ * @param {Object} p
+ * @param {string}   p.module    - módulo (ej. 'expenses')
+ * @param {string}   p.entity_id - UUID de la entidad
+ * @param {File}     p.file
+ * @param {string}   [p.projectId]
+ * @returns {Promise<Object>} row de attachments
+ */
+export async function addAttachment({ module, entity_id, file, projectId } = {}) {
+  requireSupabase();
+  if (!module)    throw new Error("module es requerido.");
+  if (!entity_id) throw new Error("entity_id es requerido.");
+  if (!file)      throw new Error("file es requerido.");
+
+  const pid = projectId || getProjectId();
+  const safeName = safeFileName(file.name);
+  const storagePath = `${pid}/${module}/${entity_id}/${nowStamp()}_${safeName}`;
+
+  // 1. Subir a storage
+  await uploadFile({
+    file,
+    path: storagePath,
+    bucket: ATTACHMENTS_BUCKET,
+    upsert: false,
+    contentType: file.type || undefined,
+  });
+
+  // 2. Insertar registro en tabla
+  const { data, error } = await supabase
+    .from("attachments")
+    .insert({
+      project_id:     pid,
+      module,
+      entity_id,
+      storage_bucket: ATTACHMENTS_BUCKET,
+      storage_path:   storagePath,
+      mime_type:      file.type || null,
+      size_bytes:     file.size || null,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    // Best-effort: limpiar storage si falla el INSERT
+    try {
+      await removeFiles({ paths: [storagePath], bucket: ATTACHMENTS_BUCKET });
+    } catch { /* ignore cleanup error */ }
+    throw error;
+  }
+
+  return data;
+}
+
+/**
+ * Genera signed URL para un attachment.
+ * @param {string} attachment_id
+ * @param {number} [expiresIn=3600]
+ */
+export async function getAttachmentUrl(attachment_id, expiresIn = 3600) {
+  requireSupabase();
+  const { data, error } = await supabase
+    .from("attachments")
+    .select("storage_path, storage_bucket")
+    .eq("id", attachment_id)
+    .single();
+  if (error) throw error;
+  return createSignedUrl({ path: data.storage_path, bucket: data.storage_bucket, expiresIn });
+}
+
+/**
+ * Elimina el attachment (tabla + storage best-effort).
+ * @param {string} attachment_id
+ */
+export async function deleteAttachment(attachment_id) {
+  requireSupabase();
+  const { data, error } = await supabase
+    .from("attachments")
+    .select("storage_path, storage_bucket")
+    .eq("id", attachment_id)
+    .single();
+  if (error) throw error;
+
+  // Borrar de tabla
+  const { error: delErr } = await supabase.from("attachments").delete().eq("id", attachment_id);
+  if (delErr) throw delErr;
+
+  // Best-effort: limpiar storage
+  try {
+    await removeFiles({ paths: [data.storage_path], bucket: data.storage_bucket });
+  } catch { /* ignore */ }
+}
